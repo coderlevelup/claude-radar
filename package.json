@@ -1,0 +1,12 @@
+{
+  "name": "claude-kanban",
+  "version": "1.0.0",
+  "description": "Live Kanban board for Claude Code conversations",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
