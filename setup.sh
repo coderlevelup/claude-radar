@@ -107,6 +107,18 @@ if [ ! -f "$SETTINGS_FILE" ]; then
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOOK_SCRIPT} stop",
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "idle_prompt",
@@ -158,6 +170,18 @@ const kanbanHooks = {
     }
   ],
   Stop: [
+    {
+      hooks: [
+        {
+          type: 'command',
+          command: hookScript + ' stop',
+          async: true,
+          timeout: 5
+        }
+      ]
+    }
+  ],
+  SubagentStop: [
     {
       hooks: [
         {

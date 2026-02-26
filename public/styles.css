@@ -285,6 +285,21 @@ main {
   box-shadow: 0 0 0 1px var(--accent-dim);
 }
 
+.card[data-status="working"]:hover {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green-dim);
+}
+
+.card[data-status="waiting"]:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
+.card[data-status="idle"]:hover {
+  border-color: var(--text-dim);
+  box-shadow: 0 0 0 1px rgba(82, 82, 91, 0.15);
+}
+
 .card-summary {
   font-size: 13px;
   font-weight: 500;
@@ -297,11 +312,17 @@ main {
   overflow: hidden;
 }
 
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .card-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 6px;
 }
 
 .badge {
@@ -359,6 +380,8 @@ main {
   color: var(--text-dim);
   display: flex;
   gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .card-time span::before {
@@ -745,22 +768,62 @@ main {
 
   .header-right { gap: 8px; }
 
-  main { padding: 12px 10px 32px; }
+  main { padding: 8px 0 32px; gap: 0; }
 
-  /* Single column: show only Today, hide This Week + Older headers */
+  .swimlane {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+  }
+
+  .swimlane-header {
+    padding: 10px 14px 4px;
+  }
+
+  .swimlane-header:hover {
+    background: transparent;
+  }
+
+  .swimlane-count { display: none; }
+  .swimlane-drag { display: none; }
+  .swimlane-chevron { display: none; }
+  .swimlane-path { display: none; }
+
+  .swimlane-name {
+    font-size: 11px;
+  }
+
+  /* Single column: show only Today, no grid chrome */
   .swimlane-body {
     grid-template-columns: 1fr !important;
+    background: transparent;
+    border-top: none;
+    gap: 0;
   }
 
   .swimlane-body .column:not(:first-child) {
     display: none;
   }
 
+  .swimlane-body .column {
+    background: transparent;
+    padding: 0 14px;
+    min-height: 0;
+  }
+
   .swimlane-body .column-header {
     display: none;
   }
 
-  .swimlane-path { display: none; }
+  .card {
+    border-color: transparent;
+    border-radius: 0;
+  }
+
+  .card:hover {
+    border-color: var(--accent);
+    border-radius: var(--radius-sm);
+  }
 
   .swimlane.no-today { display: none; }
 

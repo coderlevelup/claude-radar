@@ -420,12 +420,14 @@
     }
 
     return `
-      <div class="card" data-session-id="${s.sessionId}" data-dir="${esc(dirName)}">
+      <div class="card" data-session-id="${s.sessionId}" data-dir="${esc(dirName)}" data-status="${statusKey}">
         <div class="card-summary" title="${esc(s.firstPrompt)}">${esc(s.summary)}</div>
-        <div class="card-badges">${badges.join('')}</div>
-        <div class="card-time">
-          <span data-label="active ">${relativeTime(s.modified)}</span>
-          <span data-label="created ">${relativeTime(s.created)}</span>
+        <div class="card-footer">
+          <div class="card-badges">${badges.join('')}</div>
+          <div class="card-time">
+            <span data-label="active ">${relativeTime(s.modified)}</span>
+            <span data-label="created ">${relativeTime(s.created)}</span>
+          </div>
         </div>
       </div>
     `;
