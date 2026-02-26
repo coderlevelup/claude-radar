@@ -100,7 +100,22 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
   return 'idle';
 }
 
-// Read first user prompt and message count from a .jsonl session file.
+// System artifacts injected by Claude Code that aren't real user prompts
+const ARTIFACT_PREFIXES = [
+  '[Request interrupted',
+  '<local-command-',
+  '<command-name>',
+];
+
+function isArtifact(text) {
+  const t = text.trimStart();
+  return !t || ARTIFACT_PREFIXES.some(p => t.startsWith(p));
+}
+
+// Read first user prompt, parent session ID, and estimated message count from a
+// .jsonl file.  Only reads the first ~32KB — enough for prompt/parent detection.
+// Message count is estimated from file size (avg ~1.5KB per message turn) to avoid
+// scanning potentially huge (100MB+) files.
 // Uses cache to avoid re-reading unchanged files.
 function parseSessionFile(filePath) {
   let stat;
@@ -115,39 +130,61 @@ function parseSessionFile(filePath) {
   if (cached && cached.mtime === mtimeMs) return cached.data;
 
   let firstPrompt = '';
+  let parentSessionId = '';
   let messageCount = 0;
 
+  const sessionId = path.basename(filePath, '.jsonl');
+
   try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n');
-    for (const line of lines) {
+    const fd = fs.openSync(filePath, 'r');
+    const fileSize = fs.fstatSync(fd).size;
+    const headSize = Math.min(32768, fileSize);
+    const headBuf = Buffer.alloc(headSize);
+    fs.readSync(fd, headBuf, 0, headSize, 0);
+    fs.closeSync(fd);
+
+    const head = headBuf.toString('utf-8');
+    const headLines = head.split('\n');
+
+    let hasMessages = false;
+    for (const line of headLines) {
       if (!line.trim()) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
-      const type = obj.type || '';
-      if (type === 'user' || type === 'assistant') messageCount++;
-      if (type === 'user' && !firstPrompt) {
-        const msg = obj.message;
-        if (msg && typeof msg === 'object') {
-          const content = msg.content;
-          if (Array.isArray(content)) {
-            for (const c of content) {
-              if (c && c.type === 'text' && c.text) {
-                firstPrompt = c.text.slice(0, 200);
-                break;
+      if (obj.type === 'user' || obj.type === 'assistant') hasMessages = true;
+      if (obj.type === 'user') {
+        if (!parentSessionId && obj.sessionId && obj.sessionId !== sessionId) {
+          parentSessionId = obj.sessionId;
+        }
+        if (!firstPrompt) {
+          const msg = obj.message;
+          if (msg && typeof msg === 'object') {
+            const ct = msg.content;
+            let text = '';
+            if (Array.isArray(ct)) {
+              for (const c of ct) {
+                if (c && c.type === 'text' && c.text) { text = c.text; break; }
               }
+            } else if (typeof ct === 'string') {
+              text = ct;
             }
-          } else if (typeof content === 'string') {
-            firstPrompt = content.slice(0, 200);
+            if (text && !isArtifact(text)) {
+              firstPrompt = text.slice(0, 200);
+            }
           }
         }
       }
+      if (firstPrompt && parentSessionId) break;
     }
+
+    // Estimate message count from file size (~1.5KB per message turn on average)
+    // Mark as 0 if the head contained no user/assistant messages (empty session)
+    messageCount = hasMessages ? Math.max(1, Math.round(fileSize / 1500)) : 0;
   } catch {
     // Unreadable file
   }
 
-  const data = { firstPrompt, messageCount };
+  const data = { firstPrompt, messageCount, parentSessionId };
   fileCache.set(filePath, { mtime: mtimeMs, data });
   return data;
 }
@@ -192,7 +229,7 @@ app.get('/api/sessions', (req, res) => {
 
     if (files.length === 0 && indexedById.size === 0) continue;
 
-    const sessions = [];
+    const rawSessions = [];
     let projectPath = '';
     let mostRecent = 0;
 
@@ -211,6 +248,10 @@ app.get('/api/sessions', (req, res) => {
       const lastActivity = stat.mtimeMs;
       const fileCreated = stat.birthtimeMs || stat.ctimeMs;
 
+      // Always parse the file for parentSessionId and message count
+      const parsed = parseSessionFile(filePath);
+      const parentSessionId = parsed ? parsed.parentSessionId : '';
+
       const indexed = indexedById.get(sessionId);
 
       let summary, firstPrompt, messageCount, gitBranch, created, isSidechain, status;
@@ -218,38 +259,91 @@ app.get('/api/sessions', (req, res) => {
       if (indexed) {
         summary = indexed.summary || '';
         firstPrompt = indexed.firstPrompt || '';
-        messageCount = indexed.messageCount || 0;
+        messageCount = indexed.messageCount || (parsed ? parsed.messageCount : 0);
         gitBranch = indexed.gitBranch || '';
         created = indexed.created;
         isSidechain = indexed.isSidechain || false;
         status = detectSessionStatus(sessionId, filePath, lastActivity);
         if (!projectPath) projectPath = indexed.projectPath || '';
       } else {
-        // Not in index — parse the file directly
-        const parsed = parseSessionFile(filePath);
         firstPrompt = parsed ? parsed.firstPrompt : '';
         messageCount = parsed ? parsed.messageCount : 0;
         status = detectSessionStatus(sessionId, filePath, lastActivity);
-        summary = ''; // no summary available
+        summary = '';
         gitBranch = '';
         created = new Date(fileCreated).toISOString();
         isSidechain = false;
       }
 
+      // Skip empty sessions (e.g. started and immediately abandoned)
+      if (messageCount === 0 && !firstPrompt) continue;
+
       if (lastActivity > mostRecent) mostRecent = lastActivity;
 
-      sessions.push({
+      rawSessions.push({
         sessionId,
+        parentSessionId,
         summary: summary || firstPrompt.slice(0, 80) || '(no summary)',
         firstPrompt: firstPrompt || '',
         messageCount,
         gitBranch,
         status,
         created: created || new Date(fileCreated).toISOString(),
-        lastActivity, // actual file mtime in ms — used for column grouping
+        lastActivity,
         modified: new Date(lastActivity).toISOString(),
         isSidechain,
       });
+    }
+
+    // Merge continuation chains: collapse parent→child sequences into one entry.
+    // The latest session in each chain inherits the root's created time and
+    // accumulates message counts. Previous sessions are kept in an array.
+    const byId = new Map();
+    for (const s of rawSessions) byId.set(s.sessionId, s);
+
+    // Find which sessions are parents (have a child pointing to them)
+    const isParent = new Set();
+    for (const s of rawSessions) {
+      if (s.parentSessionId && byId.has(s.parentSessionId)) {
+        isParent.add(s.parentSessionId);
+      }
+    }
+
+    const sessions = [];
+    for (const s of rawSessions) {
+      if (isParent.has(s.sessionId)) continue; // skip — will be folded into child
+
+      // Walk back through parent chain
+      const chain = [];
+      let cur = s;
+      while (cur.parentSessionId && byId.has(cur.parentSessionId)) {
+        const parent = byId.get(cur.parentSessionId);
+        chain.unshift(parent);
+        cur = parent;
+      }
+
+      if (chain.length > 0) {
+        // Use root session's created time
+        s.created = chain[0].created;
+        // Aggregate message counts
+        s.messageCount = chain.reduce((sum, p) => sum + p.messageCount, 0) + s.messageCount;
+        // Use root's summary/firstPrompt if current one is generic
+        if (chain[0].firstPrompt && (!s.firstPrompt || s.summary === '(no summary)')) {
+          s.firstPrompt = chain[0].firstPrompt;
+          s.summary = chain[0].summary;
+        }
+        // Attach previous sessions for the UI
+        s.previousSessions = chain.map(p => ({
+          sessionId: p.sessionId,
+          created: p.created,
+          modified: p.modified,
+          messageCount: p.messageCount,
+          summary: p.summary,
+        }));
+      }
+
+      delete s.parentSessionId;
+      sessions.push(s);
     }
 
     if (sessions.length === 0) continue;

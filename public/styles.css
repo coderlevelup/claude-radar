@@ -163,6 +163,32 @@ main {
   gap: 10px;
 }
 
+.swimlane-drag {
+  font-size: 16px;
+  color: var(--text-dim);
+  cursor: grab;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+  line-height: 1;
+}
+
+.swimlane-drag:hover {
+  opacity: 1;
+}
+
+.swimlane-header:active .swimlane-drag {
+  cursor: grabbing;
+}
+
+.swimlane.dragging {
+  opacity: 0.4;
+}
+
+.swimlane.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
 .swimlane-chevron {
   font-size: 11px;
   color: var(--text-dim);
@@ -699,6 +725,42 @@ main {
 .timeline-span-bar:hover .timeline-tooltip,
 .timeline-bar:hover .timeline-tooltip {
   display: block;
+}
+
+/* ── Narrow / side-pane layout ───────────────────────── */
+@media (max-width: 600px) {
+  header {
+    padding: 12px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  h1 { font-size: 14px; }
+
+  .header-right { gap: 8px; }
+
+  main { padding: 12px 10px 32px; }
+
+  /* Single column: show only Today, hide This Week + Older headers */
+  .swimlane-body {
+    grid-template-columns: 1fr !important;
+  }
+
+  .swimlane-body .column:not(:first-child) {
+    display: none;
+  }
+
+  .swimlane-body .column-header {
+    display: none;
+  }
+
+  .swimlane-path { display: none; }
+
+  .swimlane.no-today { display: none; }
+
+  .panel {
+    width: 100vw;
+  }
 }
 
 /* ── Scrollbar ───────────────────────────────────────── */

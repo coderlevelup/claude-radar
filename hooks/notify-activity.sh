@@ -3,7 +3,12 @@
 # Usage: notify-activity.sh <event>
 # Event is passed as $1 since hooks can't easily parameterize the stdin JSON.
 EVENT="${1:-unknown}"
-SESSION_ID=$(jq -r '.session_id // empty' 2>/dev/null)
+
+# Read only the first 1KB of stdin — session_id is near the top and we don't need
+# the full tool output (which can be megabytes). Avoids jq parsing huge payloads.
+HEAD=$(head -c 1024 2>/dev/null)
+SESSION_ID=$(echo "$HEAD" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
 [ -z "$SESSION_ID" ] && exit 0
 curl -s -X POST "http://localhost:6767/api/activity" \
   -H 'Content-Type: application/json' \

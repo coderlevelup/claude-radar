@@ -13,10 +13,62 @@
   const viewTimelineBtn = document.getElementById('view-timeline');
 
   let lastJson = '';
-  const collapsed = new Set();
   let lastData = null;
   let showOlder = false;
   let currentView = 'board';
+
+  // ── Persistent state (localStorage) ─────────────────
+  const STORAGE_ORDER = 'kanban-project-order';
+  const STORAGE_COLLAPSED = 'kanban-collapsed';
+
+  let projectOrder = JSON.parse(localStorage.getItem(STORAGE_ORDER) || '[]');
+  const collapsed = new Set(JSON.parse(localStorage.getItem(STORAGE_COLLAPSED) || '[]'));
+  const lastMostRecent = new Map(); // dirName → mostRecent timestamp for activity detection
+
+  function saveOrder() {
+    localStorage.setItem(STORAGE_ORDER, JSON.stringify(projectOrder));
+  }
+  function saveCollapsed() {
+    localStorage.setItem(STORAGE_COLLAPSED, JSON.stringify([...collapsed]));
+  }
+
+  // Sort projects: stored order first, new projects at top sorted by mostRecent
+  function sortProjects(projects) {
+    const orderIndex = new Map();
+    projectOrder.forEach((dir, i) => orderIndex.set(dir, i));
+
+    const known = [];
+    const unknown = [];
+    for (const p of projects) {
+      if (orderIndex.has(p.dirName)) {
+        known.push(p);
+      } else {
+        unknown.push(p);
+      }
+    }
+    known.sort((a, b) => orderIndex.get(a.dirName) - orderIndex.get(b.dirName));
+    unknown.sort((a, b) => b.mostRecent - a.mostRecent);
+
+    const sorted = [...unknown, ...known];
+
+    // Update stored order to include new projects
+    projectOrder = sorted.map(p => p.dirName);
+    saveOrder();
+
+    return sorted;
+  }
+
+  // Detect new activity on collapsed projects and expand them
+  function expandOnActivity(projects) {
+    for (const p of projects) {
+      const prev = lastMostRecent.get(p.dirName);
+      if (prev !== undefined && p.mostRecent > prev && collapsed.has(p.dirName)) {
+        collapsed.delete(p.dirName);
+        saveCollapsed();
+      }
+      lastMostRecent.set(p.dirName, p.mostRecent);
+    }
+  }
 
   // ── Time helpers ──────────────────────────────────────
   function relativeTime(iso) {
@@ -94,7 +146,7 @@
     weeks.sort((a, b) => b.weekStart - a.weekStart);
     // Sort sessions within each week
     for (const w of weeks) {
-      w.sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+      w.sessions.sort((a, b) => new Date(b.created) - new Date(a.created));
     }
     return weeks;
   }
@@ -207,28 +259,38 @@
     }
   }
 
+  // ── Drag state ──────────────────────────────────────────
+  let dragSrcDir = null;
+
   // ── Board Render ────────────────────────────────────────
   function renderBoard(data) {
     lastData = data;
+
+    expandOnActivity(data.projects);
+    const sorted = sortProjects(data.projects);
+
     stats.textContent = `${data.totalProjects} projects · ${data.totalSessions} sessions`;
 
     const frag = document.createDocumentFragment();
 
-    for (const project of data.projects) {
+    for (const project of sorted) {
       // Group sessions into columns
       const groups = { today: [], week: [], older: [] };
       for (const s of project.sessions) {
         groups[timeColumn(s)].push(s);
       }
       for (const key of Object.keys(groups)) {
-        groups[key].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+        groups[key].sort((a, b) => new Date(b.created) - new Date(a.created));
       }
 
       // Skip projects with no visible sessions
       if (!showOlder && groups.today.length === 0 && groups.week.length === 0) continue;
 
       const lane = document.createElement('div');
-      lane.className = 'swimlane' + (collapsed.has(project.dirName) ? ' collapsed' : '');
+      lane.className = 'swimlane'
+        + (collapsed.has(project.dirName) ? ' collapsed' : '')
+        + (groups.today.length === 0 ? ' no-today' : '');
+      lane.dataset.dir = project.dirName;
 
       let columnsHtml = '';
       let colCount = 2;
@@ -250,8 +312,9 @@
       }
 
       lane.innerHTML = `
-        <div class="swimlane-header" data-lane="${project.dirName}">
+        <div class="swimlane-header" draggable="true" data-lane="${project.dirName}">
           <div class="swimlane-title">
+            <span class="swimlane-drag">\u2261</span>
             <span class="swimlane-chevron">\u25BC</span>
             <span class="swimlane-name">${esc(project.projectName)}</span>
             <span class="swimlane-path">${esc(project.projectPath)}</span>
@@ -263,10 +326,51 @@
         </div>
       `;
 
-      lane.querySelector('.swimlane-header').addEventListener('click', () => {
+      const header = lane.querySelector('.swimlane-header');
+
+      // Collapse/expand on click (but not during drag)
+      header.addEventListener('click', (e) => {
+        if (e.target.closest('.swimlane-drag')) return; // don't toggle when grabbing handle
         const key = project.dirName;
         if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
+        saveCollapsed();
         lane.classList.toggle('collapsed');
+      });
+
+      // Drag-and-drop
+      header.addEventListener('dragstart', (e) => {
+        dragSrcDir = project.dirName;
+        lane.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      header.addEventListener('dragend', () => {
+        dragSrcDir = null;
+        lane.classList.remove('dragging');
+        board.querySelectorAll('.swimlane').forEach(el => el.classList.remove('drag-over'));
+      });
+      lane.addEventListener('dragover', (e) => {
+        if (!dragSrcDir || dragSrcDir === project.dirName) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        board.querySelectorAll('.swimlane').forEach(el => el.classList.remove('drag-over'));
+        lane.classList.add('drag-over');
+      });
+      lane.addEventListener('dragleave', () => {
+        lane.classList.remove('drag-over');
+      });
+      lane.addEventListener('drop', (e) => {
+        e.preventDefault();
+        lane.classList.remove('drag-over');
+        if (!dragSrcDir || dragSrcDir === project.dirName) return;
+
+        const fromIdx = projectOrder.indexOf(dragSrcDir);
+        const toIdx = projectOrder.indexOf(project.dirName);
+        if (fromIdx === -1 || toIdx === -1) return;
+
+        projectOrder.splice(fromIdx, 1);
+        projectOrder.splice(toIdx, 0, dragSrcDir);
+        saveOrder();
+        dispatchRender();
       });
 
       lane.querySelector('.swimlane-body').addEventListener('click', (e) => {
