@@ -406,7 +406,7 @@
   }
 
   function renderCard(s, dirName) {
-    const statusLabels = { working: '\u25cf working', waiting: '\u25cb waiting', idle: '\u00b7 idle' };
+    const statusLabels = { working: '\u25cf working', waiting: '\u25cf waiting', idle: '\u00b7 idle' };
     const statusKey = s.status || 'idle';
 
     const badges = [];
