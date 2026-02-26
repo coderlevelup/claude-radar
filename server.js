@@ -431,6 +431,30 @@ app.get('/api/session/:dirName/:sessionId', (req, res) => {
   res.json({ messages });
 });
 
+// Live reload: track mtime of static files, clients poll for changes
+const PUBLIC_DIR = path.join(__dirname, 'public');
+let staticHash = '';
+
+function computeStaticHash() {
+  try {
+    const files = fs.readdirSync(PUBLIC_DIR);
+    const mtimes = files.map(f => {
+      try { return fs.statSync(path.join(PUBLIC_DIR, f)).mtimeMs; } catch { return 0; }
+    });
+    return mtimes.join(',');
+  } catch { return ''; }
+}
+staticHash = computeStaticHash();
+
+app.get('/api/livereload', (req, res) => {
+  const current = computeStaticHash();
+  if (current !== staticHash) {
+    staticHash = current;
+    return res.json({ reload: true });
+  }
+  res.json({ reload: false });
+});
+
 app.listen(PORT, () => {
   console.log(`Claude Kanban → http://localhost:${PORT}`);
 });

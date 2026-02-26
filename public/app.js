@@ -585,20 +585,36 @@
   }
 
   // ── Poll ──────────────────────────────────────────────
+  const pulse = document.getElementById('pulse');
+
   async function poll() {
+    pulse.classList.add('fetching');
     try {
       const res = await fetch('/api/sessions');
       const json = await res.text();
+      pulse.classList.remove('disconnected');
       if (json !== lastJson) {
         lastJson = json;
         lastData = JSON.parse(json);
         dispatchRender();
       }
     } catch (err) {
+      pulse.classList.add('disconnected');
       console.error('Poll failed:', err);
+    } finally {
+      setTimeout(() => pulse.classList.remove('fetching'), 300);
     }
   }
 
   poll();
   setInterval(poll, 1000);
+
+  // Live reload: check if static files changed
+  setInterval(async () => {
+    try {
+      const res = await fetch('/api/livereload');
+      const data = await res.json();
+      if (data.reload) location.reload();
+    } catch {}
+  }, 2000);
 })();
