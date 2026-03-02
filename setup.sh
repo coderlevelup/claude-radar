@@ -46,6 +46,17 @@ cat > "$PLIST_PATH" <<EOF
     <string>${REPO_DIR}/logs/stdout.log</string>
     <key>StandardErrorPath</key>
     <string>${REPO_DIR}/logs/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$(dirname "$NODE_PATH"):/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>AWS_PROFILE</key>
+        <string>${AWS_PROFILE:-default}</string>
+        <key>AWS_REGION</key>
+        <string>${AWS_REGION:-us-east-1}</string>
+    </dict>
 </dict>
 </plist>
 EOF

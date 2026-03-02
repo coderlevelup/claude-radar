@@ -4,10 +4,9 @@
 # Event is passed as $1 since hooks can't easily parameterize the stdin JSON.
 EVENT="${1:-unknown}"
 
-# Read only the first 1KB of stdin — session_id is near the top and we don't need
-# the full tool output (which can be megabytes). Avoids jq parsing huge payloads.
-HEAD=$(head -c 1024 2>/dev/null)
-SESSION_ID=$(echo "$HEAD" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+# Read first 1KB for session_id, then drain the rest to avoid broken pipe
+# signals back to Claude Code (stdin can be megabytes for large tool outputs).
+SESSION_ID=$({ head -c 1024; cat > /dev/null; } 2>/dev/null | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 [ -z "$SESSION_ID" ] && exit 0
 curl -s -X POST "http://localhost:6767/api/activity" \

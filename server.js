@@ -2,9 +2,12 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const AnthropicBedrock = require('@anthropic-ai/bedrock-sdk').default;
 const app = express();
 const PORT = 6767;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+
+const bedrock = new AnthropicBedrock({ aws_region: process.env.AWS_REGION || 'eu-west-1' });
 
 // Cache parsed session files so we don't re-read unchanged files every poll
 const fileCache = new Map(); // key: filePath, value: { mtime, data }
@@ -13,19 +16,147 @@ const fileCache = new Map(); // key: filePath, value: { mtime, data }
 // key: sessionId, value: { event, timestamp }
 const activityMap = new Map();
 
+// AI-generated blurbs — populated on stop events via Haiku
+// key: sessionId, value: string
+const blurbCache = new Map();
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Find the .jsonl file for a session ID by scanning project dirs
+function findSessionFile(sessionId) {
+  try {
+    for (const dir of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const fp = path.join(PROJECTS_DIR, dir.name, sessionId + '.jsonl');
+      if (fs.existsSync(fp)) return fp;
+    }
+  } catch {}
+  return null;
+}
+
+// Read recent conversation from session tail for summarization
+function readRecentConversation(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const tailSize = Math.min(16384, stat.size);
+    const buf = Buffer.alloc(tailSize);
+    fs.readSync(fd, buf, 0, tailSize, stat.size - tailSize);
+    fs.closeSync(fd);
+
+    const lines = buf.toString('utf-8').split('\n').filter(l => l.trim());
+    const turns = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+        const content = obj.message && obj.message.content;
+        let text = '';
+        if (typeof content === 'string') {
+          text = content;
+        } else if (Array.isArray(content)) {
+          text = content
+            .filter(c => c && c.type === 'text' && c.text)
+            .map(c => c.text)
+            .join(' ');
+        }
+        if (text.trim()) {
+          turns.push({ role: obj.type, text: text.slice(0, 500) });
+        }
+      } catch {}
+    }
+    return turns.slice(-8); // last ~8 turns
+  } catch {}
+  return [];
+}
+
+// Generate a tweet-length blurb via Haiku
+async function generateBlurb(sessionId) {
+  const filePath = findSessionFile(sessionId);
+  if (!filePath) return;
+
+  const turns = readRecentConversation(filePath);
+  if (turns.length === 0) return;
+
+  const convo = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
+
+  try {
+    const resp = await bedrock.messages.create({
+      model: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+      max_tokens: 120,
+      messages: [{
+        role: 'user',
+        content: `Summarize this coding session in one sentence (under 200 chars), like a tweet. Focus on what was accomplished or is in progress. No hashtags or emoji. Just the substance.\n\n${convo}`,
+      }],
+    });
+    const blurb = (resp.content[0] && resp.content[0].text || '').trim();
+    if (blurb) blurbCache.set(sessionId, blurb);
+  } catch (err) {
+    console.error('Blurb generation failed:', err.message);
+  }
+}
 
 // Hook endpoint — receives activity events from Claude Code hooks
 app.post('/api/activity', (req, res) => {
   const { sessionId, event } = req.body || {};
   if (!sessionId || !event) return res.status(400).json({ error: 'missing sessionId or event' });
   activityMap.set(sessionId, { event, timestamp: Date.now() });
+
+  // Generate blurb asynchronously on stop events
+  if (event === 'stop') {
+    generateBlurb(sessionId).catch(() => {});
+  }
+
   res.json({ ok: true });
 });
 
 // Determine session status. Uses hook-reported activity when available,
 // falls back to file-tail heuristics for sessions without hook data.
+// Read the last assistant message from the tail of a .jsonl file
+function readLastAssistantMessage(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const size = stat.size;
+    const readSize = Math.min(8192, size);
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, size - readSize);
+    fs.closeSync(fd);
+    const lines = buf.toString('utf-8').split('\n').filter(l => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj.type === 'assistant' || obj.type === 'user') return obj;
+      } catch { /* partial line */ }
+    }
+  } catch {}
+  return null;
+}
+
+// Check if the last assistant message is waiting for user input:
+// - Contains AskUserQuestion or ExitPlanMode tool use
+// - Last text block ends with a question mark
+function isWaitingForInput(lastMsg) {
+  if (!lastMsg || lastMsg.type !== 'assistant') return false;
+  const content = (lastMsg.message || {}).content;
+  if (!Array.isArray(content)) return false;
+
+  let lastText = '';
+  for (const c of content) {
+    if (!c || typeof c !== 'object') continue;
+    if (c.type === 'tool_use') {
+      const name = (c.name || '').toLowerCase();
+      if (name === 'askuserquestion' || name === 'exitplanmode') return true;
+    }
+    if (c.type === 'text' && c.text) {
+      lastText = c.text;
+    }
+  }
+
+  return lastText.trimEnd().endsWith('?');
+}
+
 function detectSessionStatus(sessionId, filePath, mtimeMs) {
   const now = Date.now();
 
@@ -35,13 +166,14 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
     const ageMs = now - activity.timestamp;
 
     if (activity.event === 'working' || activity.event === 'prompt') {
-      // Hook says working/prompt — trust it if recent
-      if (ageMs < 60000) return 'working';   // 60s grace for tool execution
-      if (ageMs < 3600000) return 'waiting';  // stale working → waiting
+      if (ageMs < 60000) return 'working';
       return 'idle';
     }
     if (activity.event === 'stop') {
-      if (ageMs < 3600000) return 'waiting';
+      if (ageMs < 3600000) {
+        const lastMsg = readLastAssistantMessage(filePath);
+        return isWaitingForInput(lastMsg) ? 'waiting' : 'idle';
+      }
       return 'idle';
     }
     if (activity.event === 'idle') {
@@ -51,33 +183,7 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
 
   // Fallback: file-based heuristic for sessions without hook data
   const fileAge = now - mtimeMs;
-
-  let tail = '';
-  try {
-    const fd = fs.openSync(filePath, 'r');
-    const stat = fs.fstatSync(fd);
-    const size = stat.size;
-    const readSize = Math.min(8192, size);
-    const buf = Buffer.alloc(readSize);
-    fs.readSync(fd, buf, 0, readSize, size - readSize);
-    fs.closeSync(fd);
-    tail = buf.toString('utf-8');
-  } catch {
-    return 'idle';
-  }
-
-  const lines = tail.split('\n').filter(l => l.trim());
-  let lastMsg = null;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const obj = JSON.parse(lines[i]);
-      if (obj.type === 'assistant' || obj.type === 'user') {
-        lastMsg = obj;
-        break;
-      }
-    } catch { /* partial line */ }
-  }
-
+  const lastMsg = readLastAssistantMessage(filePath);
   if (!lastMsg) return 'idle';
 
   if (fileAge < 30000) {
@@ -96,7 +202,9 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
     }
   }
 
-  if (fileAge < 3600000) return 'waiting';
+  if (fileAge < 3600000) {
+    return isWaitingForInput(lastMsg) ? 'waiting' : 'idle';
+  }
   return 'idle';
 }
 
@@ -105,11 +213,28 @@ const ARTIFACT_PREFIXES = [
   '[Request interrupted',
   '<local-command-',
   '<command-name>',
+  '<command-message>',
+  '<ide_opened_file>',
 ];
 
 function isArtifact(text) {
   const t = text.trimStart();
   return !t || ARTIFACT_PREFIXES.some(p => t.startsWith(p));
+}
+
+// Clean a title string: strip plan boilerplate, collapse whitespace, trim length
+function cleanTitle(text) {
+  let t = text.replace(/^Implement the following plan:\s*/i, '');
+  t = t.replace(/^#\s*Plan:\s*/i, '');
+  t = t.replace(/<[^>]+>/g, ''); // strip XML-like tags
+  // Cut at markdown headers or section breaks
+  t = t.split(/\s*##\s/)[0];
+  t = t.split(/\s*\n\s*\n/)[0];
+  t = t.replace(/\s+/g, ' ').trim();
+  // Skip system-injected boilerplate
+  if (t.startsWith('Base directory for this skill:')) t = '';
+  if (t.startsWith('This session is being continued')) t = '';
+  return t.slice(0, 80) || '';
 }
 
 // Read first user prompt, parent session ID, and estimated message count from a
@@ -135,12 +260,19 @@ function parseSessionFile(filePath) {
 
   const sessionId = path.basename(filePath, '.jsonl');
 
+  let blurb = '';
+
   try {
     const fd = fs.openSync(filePath, 'r');
     const fileSize = fs.fstatSync(fd).size;
     const headSize = Math.min(32768, fileSize);
     const headBuf = Buffer.alloc(headSize);
     fs.readSync(fd, headBuf, 0, headSize, 0);
+
+    // Also read tail for blurb extraction
+    const tailSize = Math.min(16384, fileSize);
+    const tailBuf = Buffer.alloc(tailSize);
+    fs.readSync(fd, tailBuf, 0, tailSize, fileSize - tailSize);
     fs.closeSync(fd);
 
     const head = headBuf.toString('utf-8');
@@ -160,21 +292,45 @@ function parseSessionFile(filePath) {
           const msg = obj.message;
           if (msg && typeof msg === 'object') {
             const ct = msg.content;
-            let text = '';
             if (Array.isArray(ct)) {
               for (const c of ct) {
-                if (c && c.type === 'text' && c.text) { text = c.text; break; }
+                if (c && c.type === 'text' && c.text && !isArtifact(c.text)) {
+                  firstPrompt = c.text.slice(0, 200);
+                  break;
+                }
               }
-            } else if (typeof ct === 'string') {
-              text = ct;
-            }
-            if (text && !isArtifact(text)) {
-              firstPrompt = text.slice(0, 200);
+            } else if (typeof ct === 'string' && !isArtifact(ct)) {
+              firstPrompt = ct.slice(0, 200);
             }
           }
         }
       }
       if (firstPrompt && parentSessionId) break;
+    }
+
+    // Extract blurb from the last assistant text in the tail
+    const tailLines = tailBuf.toString('utf-8').split('\n').filter(l => l.trim());
+    for (let i = tailLines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(tailLines[i]);
+        if (obj.type === 'assistant' && obj.message) {
+          const content = obj.message.content;
+          if (Array.isArray(content)) {
+            // Collect text blocks from this message
+            const texts = [];
+            for (const c of content) {
+              if (c && c.type === 'text' && c.text) texts.push(c.text);
+            }
+            if (texts.length) {
+              blurb = texts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 280);
+              break;
+            }
+          } else if (typeof content === 'string' && content.trim()) {
+            blurb = content.replace(/\s+/g, ' ').trim().slice(0, 280);
+            break;
+          }
+        }
+      } catch { /* partial line */ }
     }
 
     // Estimate message count from file size (~1.5KB per message turn on average)
@@ -184,7 +340,7 @@ function parseSessionFile(filePath) {
     // Unreadable file
   }
 
-  const data = { firstPrompt, messageCount, parentSessionId };
+  const data = { firstPrompt, messageCount, parentSessionId, blurb };
   fileCache.set(filePath, { mtime: mtimeMs, data });
   return data;
 }
@@ -254,10 +410,11 @@ app.get('/api/sessions', (req, res) => {
 
       const indexed = indexedById.get(sessionId);
 
-      let summary, firstPrompt, messageCount, gitBranch, created, isSidechain, status;
+      let title, firstPrompt, messageCount, gitBranch, created, isSidechain, status;
+      const blurb = blurbCache.get(sessionId) || (parsed ? parsed.blurb : '');
 
       if (indexed) {
-        summary = indexed.summary || '';
+        title = indexed.summary || '';
         firstPrompt = indexed.firstPrompt || '';
         messageCount = indexed.messageCount || (parsed ? parsed.messageCount : 0);
         gitBranch = indexed.gitBranch || '';
@@ -269,7 +426,7 @@ app.get('/api/sessions', (req, res) => {
         firstPrompt = parsed ? parsed.firstPrompt : '';
         messageCount = parsed ? parsed.messageCount : 0;
         status = detectSessionStatus(sessionId, filePath, lastActivity);
-        summary = '';
+        title = '';
         gitBranch = '';
         created = new Date(fileCreated).toISOString();
         isSidechain = false;
@@ -283,7 +440,8 @@ app.get('/api/sessions', (req, res) => {
       rawSessions.push({
         sessionId,
         parentSessionId,
-        summary: summary || firstPrompt.slice(0, 80) || '(no summary)',
+        title: cleanTitle(title || firstPrompt) || '(no title)',
+        blurb: blurb || '',
         firstPrompt: firstPrompt || '',
         messageCount,
         gitBranch,
@@ -327,10 +485,10 @@ app.get('/api/sessions', (req, res) => {
         s.created = chain[0].created;
         // Aggregate message counts
         s.messageCount = chain.reduce((sum, p) => sum + p.messageCount, 0) + s.messageCount;
-        // Use root's summary/firstPrompt if current one is generic
-        if (chain[0].firstPrompt && (!s.firstPrompt || s.summary === '(no summary)')) {
+        // Use root's title/firstPrompt if current one is generic
+        if (chain[0].firstPrompt && (!s.firstPrompt || s.title === '(no title)')) {
           s.firstPrompt = chain[0].firstPrompt;
-          s.summary = chain[0].summary;
+          s.title = chain[0].title;
         }
         // Attach previous sessions for the UI
         s.previousSessions = chain.map(p => ({
@@ -338,7 +496,7 @@ app.get('/api/sessions', (req, res) => {
           created: p.created,
           modified: p.modified,
           messageCount: p.messageCount,
-          summary: p.summary,
+          title: p.title,
         }));
       }
 
@@ -429,6 +587,60 @@ app.get('/api/session/:dirName/:sessionId', (req, res) => {
   }
 
   res.json({ messages });
+});
+
+// Return recent messages from the tail of a session (lightweight)
+app.get('/api/session/:dirName/:sessionId/recent', (req, res) => {
+  const { dirName, sessionId } = req.params;
+  const filePath = path.join(PROJECTS_DIR, dirName, sessionId + '.jsonl');
+
+  let stat;
+  try { stat = fs.statSync(filePath); } catch {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const tailSize = Math.min(32768, stat.size);
+    const buf = Buffer.alloc(tailSize);
+    fs.readSync(fd, buf, 0, tailSize, stat.size - tailSize);
+    fs.closeSync(fd);
+
+    const lines = buf.toString('utf-8').split('\n').filter(l => l.trim());
+    const messages = [];
+
+    for (const line of lines) {
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+      const msg = obj.message;
+      if (!msg) continue;
+
+      const role = msg.role || obj.type;
+      const content = msg.content;
+      const parts = [];
+
+      if (typeof content === 'string') {
+        if (content.trim()) parts.push({ type: 'text', text: content.slice(0, 1000) });
+      } else if (Array.isArray(content)) {
+        for (const c of content) {
+          if (!c || typeof c !== 'object') continue;
+          if (c.type === 'text' && c.text && !isArtifact(c.text)) {
+            parts.push({ type: 'text', text: c.text.slice(0, 1000) });
+          } else if (c.type === 'tool_use') {
+            parts.push({ type: 'tool_use', name: c.name || '' });
+          }
+        }
+      }
+
+      if (parts.length > 0) messages.push({ role, parts });
+    }
+
+    // Return last 10 messages
+    res.json({ messages: messages.slice(-10) });
+  } catch {
+    res.status(500).json({ error: 'Failed to read session' });
+  }
 });
 
 // Live reload: track mtime of static files, clients poll for changes

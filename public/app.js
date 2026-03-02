@@ -5,6 +5,7 @@
   const panelOverlay = document.getElementById('panel-overlay');
   const panelTitle = document.getElementById('panel-title');
   const panelMeta = document.getElementById('panel-meta');
+  const panelBlurb = document.getElementById('panel-blurb');
   const panelMessages = document.getElementById('panel-messages');
   const panelClose = document.getElementById('panel-close');
   const showOlderCheckbox = document.getElementById('show-older');
@@ -16,6 +17,7 @@
   let lastData = null;
   let showOlder = false;
   let currentView = 'board';
+  let expandedSessionId = null;
 
   // ── Persistent state (localStorage) ─────────────────
   const STORAGE_ORDER = 'kanban-project-order';
@@ -158,7 +160,7 @@
     panel.offsetHeight;
     panel.classList.add('open');
 
-    panelTitle.textContent = session.summary;
+    panelTitle.textContent = session.title;
 
     const badges = [];
     badges.push(`<span class="badge badge-messages">${session.messageCount} msgs</span>`);
@@ -167,14 +169,22 @@
     }
     panelMeta.innerHTML = badges.join('');
 
-    panelMessages.innerHTML = '<div class="panel-loading">Loading session...</div>';
+    panelBlurb.textContent = session.blurb || '';
 
-    fetch(`/api/session/${encodeURIComponent(dirName)}/${encodeURIComponent(session.sessionId)}`)
-      .then(r => r.json())
-      .then(data => renderMessages(data.messages))
-      .catch(() => {
-        panelMessages.innerHTML = '<div class="panel-loading">Failed to load session</div>';
-      });
+    const sessionUrl = `/api/session/${encodeURIComponent(dirName)}/${encodeURIComponent(session.sessionId)}`;
+    panelMessages.innerHTML = `<a class="panel-view-link" href="${sessionUrl}" data-dir="${esc(dirName)}" data-session="${esc(session.sessionId)}">View full session</a>`;
+
+    panelMessages.querySelector('.panel-view-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      const link = e.currentTarget;
+      link.textContent = 'Loading...';
+      fetch(sessionUrl)
+        .then(r => r.json())
+        .then(data => renderMessages(data.messages))
+        .catch(() => {
+          panelMessages.innerHTML = '<div class="panel-loading">Failed to load session</div>';
+        });
+    });
   }
 
   function closePanel() {
@@ -225,6 +235,42 @@
     s = s.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre>$2</pre>');
     s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
     return s;
+  }
+
+  // ── Card thread (recent messages) ──────────────────────
+  function loadThread(card) {
+    const thread = card.querySelector('.card-thread');
+    if (!thread) return;
+    const dir = card.dataset.dir;
+    const sid = card.dataset.sessionId;
+    if (!thread.hasChildNodes()) {
+      thread.innerHTML = '<div class="thread-loading">Loading...</div>';
+    }
+
+    fetch(`/api/session/${encodeURIComponent(dir)}/${encodeURIComponent(sid)}/recent`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.messages || data.messages.length === 0) {
+          thread.innerHTML = '';
+          return;
+        }
+        const html = data.messages.map(msg => {
+          const role = msg.role === 'assistant' ? 'claude' : 'user';
+          const parts = msg.parts.map(p => {
+            if (p.type === 'text') return `<div class="thread-text">${escAndFormat(p.text)}</div>`;
+            if (p.type === 'tool_use') return `<span class="thread-tool">${esc(p.name)}</span>`;
+            return '';
+          }).join('');
+          return `<div class="thread-msg thread-${role}">${parts}</div>`;
+        }).join('');
+        // Only update DOM if content changed
+        if (thread.innerHTML !== html) {
+          const wasAtBottom = thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 10;
+          thread.innerHTML = html;
+          if (wasAtBottom) thread.scrollTop = thread.scrollHeight;
+        }
+      })
+      .catch(() => {});
   }
 
   // ── Toggle handlers ─────────────────────────────────────
@@ -378,8 +424,16 @@
         if (!card) return;
         e.stopPropagation();
         const sid = card.dataset.sessionId;
-        const session = project.sessions.find(s => s.sessionId === sid);
-        if (session) openPanel(project.dirName, session);
+        const wasExpanded = sid === expandedSessionId;
+        // Collapse any other expanded cards
+        board.querySelectorAll('.card.expanded').forEach(el => el.classList.remove('expanded'));
+        if (!wasExpanded) {
+          expandedSessionId = sid;
+          card.classList.add('expanded');
+          loadThread(card);
+        } else {
+          expandedSessionId = null;
+        }
       });
 
       frag.appendChild(lane);
@@ -387,6 +441,15 @@
 
     board.innerHTML = '';
     board.appendChild(frag);
+
+    // Restore expanded card
+    if (expandedSessionId) {
+      const card = board.querySelector(`.card[data-session-id="${expandedSessionId}"]`);
+      if (card) {
+        card.classList.add('expanded');
+        loadThread(card);
+      }
+    }
   }
 
   function renderColumn(label, sessions, dirName) {
@@ -421,7 +484,12 @@
 
     return `
       <div class="card" data-session-id="${s.sessionId}" data-dir="${esc(dirName)}" data-status="${statusKey}">
-        <div class="card-summary" title="${esc(s.firstPrompt)}">${esc(s.summary)}</div>
+        <div class="card-title">${esc(s.title)}</div>
+        ${s.blurb ? `<div class="card-blurb">${esc(s.blurb)}</div>` : ''}
+        <div class="card-expanded">
+          <div class="card-blurb-full">${esc(s.blurb)}</div>
+          <div class="card-thread"></div>
+        </div>
         <div class="card-footer">
           <div class="card-badges">${badges.join('')}</div>
           <div class="card-time">
@@ -534,14 +602,14 @@
       let barsHtml = '';
       for (let i = 0; i < bars.length; i++) {
         const bar = bars[i];
-        const tooltipText = esc(bar.session.summary) + ' &middot; ' + bar.session.messageCount + ' msgs';
+        const tooltipText = esc(bar.session.title) + ' &middot; ' + bar.session.messageCount + ' msgs';
         barsHtml += `
           <div class="timeline-span-bar status-${bar.status}"
                data-session-id="${bar.session.sessionId}"
                data-dir="${esc(project.dirName)}"
                style="left:${bar.leftPct.toFixed(2)}%;width:${bar.widthPct.toFixed(2)}%;top:${i * 26 + 3}px;"
                title="${tooltipText}">
-            ${esc(bar.session.summary)}
+            ${esc(bar.session.title)}
           </div>`;
       }
 
