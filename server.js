@@ -1,8 +1,11 @@
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const AnthropicBedrock = require('@anthropic-ai/bedrock-sdk').default;
+import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 6767;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -447,7 +450,6 @@ app.get('/api/sessions', (req, res) => {
         gitBranch,
         status,
         created: created || new Date(fileCreated).toISOString(),
-        lastActivity,
         modified: new Date(lastActivity).toISOString(),
         isSidechain,
       });
@@ -512,12 +514,12 @@ app.get('/api/sessions', (req, res) => {
       dirName: dirent.name,
       projectName,
       projectPath,
-      mostRecent,
+      mostRecent: new Date(mostRecent).toISOString(),
       sessions,
     });
   }
 
-  projects.sort((a, b) => b.mostRecent - a.mostRecent);
+  projects.sort((a, b) => new Date(b.mostRecent) - new Date(a.mostRecent));
 
   const totalProjects = projects.length;
   const totalSessions = projects.reduce((sum, p) => sum + p.sessions.length, 0);
@@ -643,28 +645,9 @@ app.get('/api/session/:dirName/:sessionId/recent', (req, res) => {
   }
 });
 
-// Live reload: track mtime of static files, clients poll for changes
-const PUBLIC_DIR = path.join(__dirname, 'public');
-let staticHash = '';
-
-function computeStaticHash() {
-  try {
-    const files = fs.readdirSync(PUBLIC_DIR);
-    const mtimes = files.map(f => {
-      try { return fs.statSync(path.join(PUBLIC_DIR, f)).mtimeMs; } catch { return 0; }
-    });
-    return mtimes.join(',');
-  } catch { return ''; }
-}
-staticHash = computeStaticHash();
-
-app.get('/api/livereload', (req, res) => {
-  const current = computeStaticHash();
-  if (current !== staticHash) {
-    staticHash = current;
-    return res.json({ reload: true });
-  }
-  res.json({ reload: false });
+// SPA fallback: serve index.html for non-API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
