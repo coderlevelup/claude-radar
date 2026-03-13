@@ -2,12 +2,12 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLIST_LABEL="com.claude-kanban"
+PLIST_LABEL="com.claude-radar"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 PORT=6767
 
-echo "=== Claude Kanban Setup ==="
+echo "=== Claude Radar Setup ==="
 echo "Repo: $REPO_DIR"
 echo ""
 
@@ -155,7 +155,7 @@ const hookScript = process.argv[2];
 
 const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
 
-const kanbanHooks = {
+const radarHooks = {
   PostToolUse: [
     {
       hooks: [
@@ -223,8 +223,8 @@ if (!settings.hooks) {
   settings.hooks = {};
 }
 
-// Merge: overwrite the 4 kanban hook events, preserve any others
-for (const [event, value] of Object.entries(kanbanHooks)) {
+// Merge: overwrite the 4 radar hook events, preserve any others
+for (const [event, value] of Object.entries(radarHooks)) {
   settings.hooks[event] = value;
 }
 

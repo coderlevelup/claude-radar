@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -233,6 +234,8 @@ function cleanTitle(text) {
   // Cut at markdown headers or section breaks
   t = t.split(/\s*##\s/)[0];
   t = t.split(/\s*\n\s*\n/)[0];
+  // Strip leading markdown header markers (e.g. "# Title" → "Title")
+  t = t.replace(/^#+\s*/, '');
   t = t.replace(/\s+/g, ' ').trim();
   // Skip system-injected boilerplate
   if (t.startsWith('Base directory for this skill:')) t = '';
@@ -264,6 +267,7 @@ function parseSessionFile(filePath) {
   const sessionId = path.basename(filePath, '.jsonl');
 
   let blurb = '';
+  let summary = '';
 
   try {
     const fd = fs.openSync(filePath, 'r');
@@ -311,12 +315,15 @@ function parseSessionFile(filePath) {
       if (firstPrompt && parentSessionId) break;
     }
 
-    // Extract blurb from the last assistant text in the tail
+    // Extract summary and blurb from the tail
     const tailLines = tailBuf.toString('utf-8').split('\n').filter(l => l.trim());
     for (let i = tailLines.length - 1; i >= 0; i--) {
       try {
         const obj = JSON.parse(tailLines[i]);
-        if (obj.type === 'assistant' && obj.message) {
+        if (obj.type === 'summary' && obj.summary) {
+          summary = obj.summary;
+        }
+        if (!blurb && obj.type === 'assistant' && obj.message) {
           const content = obj.message.content;
           if (Array.isArray(content)) {
             // Collect text blocks from this message
@@ -326,13 +333,12 @@ function parseSessionFile(filePath) {
             }
             if (texts.length) {
               blurb = texts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 280);
-              break;
             }
           } else if (typeof content === 'string' && content.trim()) {
             blurb = content.replace(/\s+/g, ' ').trim().slice(0, 280);
-            break;
           }
         }
+        if (blurb && summary) break;
       } catch { /* partial line */ }
     }
 
@@ -343,7 +349,7 @@ function parseSessionFile(filePath) {
     // Unreadable file
   }
 
-  const data = { firstPrompt, messageCount, parentSessionId, blurb };
+  const data = { firstPrompt, messageCount, parentSessionId, blurb, summary };
   fileCache.set(filePath, { mtime: mtimeMs, data });
   return data;
 }
@@ -415,9 +421,10 @@ app.get('/api/sessions', (req, res) => {
 
       let title, firstPrompt, messageCount, gitBranch, created, isSidechain, status;
       const blurb = blurbCache.get(sessionId) || (parsed ? parsed.blurb : '');
+      const parsedSummary = parsed ? parsed.summary : '';
 
       if (indexed) {
-        title = indexed.summary || '';
+        title = indexed.summary || parsedSummary || '';
         firstPrompt = indexed.firstPrompt || '';
         messageCount = indexed.messageCount || (parsed ? parsed.messageCount : 0);
         gitBranch = indexed.gitBranch || '';
@@ -429,7 +436,7 @@ app.get('/api/sessions', (req, res) => {
         firstPrompt = parsed ? parsed.firstPrompt : '';
         messageCount = parsed ? parsed.messageCount : 0;
         status = detectSessionStatus(sessionId, filePath, lastActivity);
-        title = '';
+        title = parsedSummary || '';
         gitBranch = '';
         created = new Date(fileCreated).toISOString();
         isSidechain = false;
@@ -645,11 +652,51 @@ app.get('/api/session/:dirName/:sessionId/recent', (req, res) => {
   }
 });
 
+// Focus a terminal window matching project + session title
+app.post('/api/focus-terminal', (req, res) => {
+  const { projectName, title } = req.body || {};
+  if (!projectName || !title) return res.status(400).json({ error: 'missing projectName or title' });
+
+  const titleSnippet = title.slice(0, 40).replace(/[\\"`]/g, '');
+  const projName = projectName.replace(/[\\"`]/g, '');
+
+  // AppleScript: search windows in Terminal.app, then iTerm2
+  const script = `
+    on findWindow(appName, proj, snippet)
+      try
+        tell application "System Events"
+          if not (exists process appName) then return false
+        end tell
+        tell application appName
+          repeat with w in windows
+            set t to name of w
+            if t contains proj and t contains snippet then
+              set index of w to 1
+              activate
+              return true
+            end if
+          end repeat
+        end tell
+      end try
+      return false
+    end findWindow
+
+    if findWindow("Terminal", "${projName}", "${titleSnippet}") then return "found"
+    if findWindow("iTerm2", "${projName}", "${titleSnippet}") then return "found"
+    return "not_found"
+  `;
+
+  execFile('osascript', ['-e', script], { timeout: 5000 }, (err, stdout) => {
+    const found = (stdout || '').trim() === 'found';
+    res.json({ found });
+  });
+});
+
 // SPA fallback: serve index.html for non-API routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(`Claude Kanban → http://localhost:${PORT}`);
+  console.log(`Claude Radar → http://localhost:${PORT}`);
 });

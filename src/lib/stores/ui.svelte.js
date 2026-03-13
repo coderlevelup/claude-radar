@@ -1,9 +1,9 @@
 import { untrack } from 'svelte';
 
-const STORAGE_ORDER = 'kanban-project-order';
-const STORAGE_COLLAPSED = 'kanban-collapsed';
-const STORAGE_VIEW = 'kanban-view';
-const STORAGE_OLDER = 'kanban-show-older';
+const STORAGE_ORDER = 'radar-project-order';
+const STORAGE_COLLAPSED = 'radar-collapsed';
+const STORAGE_VIEW = 'radar-view';
+const STORAGE_OLDER = 'radar-show-older';
 
 let expandedSessionId = $state(null);
 let projectOrder = $state(JSON.parse(localStorage.getItem(STORAGE_ORDER) || '[]'));
@@ -15,6 +15,13 @@ let currentView = $state(localStorage.getItem(STORAGE_VIEW) || 'board');
 let panelOpen = $state(false);
 let panelSession = $state(null);
 let panelDirName = $state('');
+
+// Reference to main window (set when PiP is active)
+let mainWindow = null;
+
+// PiP-only state (transient, no localStorage)
+let pipCollapsed = $state(new Set());
+let pipDismissed = $state(new Map()); // sessionId → modified timestamp at dismissal
 
 // Persist to localStorage reactively
 $effect.root(() => {
@@ -67,10 +74,36 @@ export const ui = {
     return collapsed.has(dirName);
   },
 
+  get mainWindow() { return mainWindow; },
+  set mainWindow(v) { mainWindow = v; },
+
+  togglePipCollapsed(dirName) {
+    const next = new Set(pipCollapsed);
+    if (next.has(dirName)) next.delete(dirName); else next.add(dirName);
+    pipCollapsed = next;
+  },
+
+  isPipCollapsed(dirName) {
+    return pipCollapsed.has(dirName);
+  },
+
+  dismissSession(sessionId, modified) {
+    const next = new Map(pipDismissed);
+    next.set(sessionId, modified);
+    pipDismissed = next;
+  },
+
+  isDismissed(sessionId, modified) {
+    if (!pipDismissed.has(sessionId)) return false;
+    return pipDismissed.get(sessionId) === modified;
+  },
+
   openPanel(dirName, session) {
     panelDirName = dirName;
     panelSession = session;
     panelOpen = true;
+    // If called from PiP, bring main window to front
+    if (mainWindow) mainWindow.focus();
   },
 
   closePanel() {

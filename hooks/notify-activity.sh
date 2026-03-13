@@ -1,5 +1,5 @@
 #!/bin/bash
-# Called by Claude Code hooks — reads JSON from stdin, POSTs activity to kanban server.
+# Called by Claude Code hooks — reads JSON from stdin, POSTs activity to radar server.
 # Usage: notify-activity.sh <event>
 # Event is passed as $1 since hooks can't easily parameterize the stdin JSON.
 EVENT="${1:-unknown}"

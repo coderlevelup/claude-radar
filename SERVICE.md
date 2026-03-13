@@ -12,39 +12,39 @@ This handles node path detection, plist generation, and service loading. The man
 
 ## Manual Setup
 
-The kanban board runs as a macOS launchd service so it starts automatically on login.
+The radar dashboard runs as a macOS launchd service so it starts automatically on login.
 
 ## Plist Location
 
 ```
-~/Library/LaunchAgents/com.claude-kanban.plist
+~/Library/LaunchAgents/com.claude-radar.plist
 ```
 
 ## Management Commands
 
 ```bash
 # Load (start) the service
-launchctl load ~/Library/LaunchAgents/com.claude-kanban.plist
+launchctl load ~/Library/LaunchAgents/com.claude-radar.plist
 
 # Unload (stop) the service
-launchctl unload ~/Library/LaunchAgents/com.claude-kanban.plist
+launchctl unload ~/Library/LaunchAgents/com.claude-radar.plist
 
 # Restart (unload + load)
-launchctl unload ~/Library/LaunchAgents/com.claude-kanban.plist && \
-launchctl load ~/Library/LaunchAgents/com.claude-kanban.plist
+launchctl unload ~/Library/LaunchAgents/com.claude-radar.plist && \
+launchctl load ~/Library/LaunchAgents/com.claude-radar.plist
 
 # Check if running
-launchctl list | grep claude-kanban
+launchctl list | grep claude-radar
 ```
 
 ## Logs
 
 ```bash
 # stdout
-tail -f ~/clode/claude-kanban/logs/stdout.log
+tail -f ~/clode/claude-radar/logs/stdout.log
 
 # stderr
-tail -f ~/clode/claude-kanban/logs/stderr.log
+tail -f ~/clode/claude-radar/logs/stderr.log
 ```
 
 ## Troubleshooting

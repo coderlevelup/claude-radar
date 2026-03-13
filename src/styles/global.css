@@ -57,6 +57,13 @@ h1 {
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-icon {
+  color: var(--green);
 }
 
 .header-right {
@@ -503,6 +510,69 @@ main {
 .badge-status-idle {
   color: var(--text-dim);
   background: rgba(82, 82, 91, 0.15);
+}
+
+.card-focus-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.card-focus-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.card-resume-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.card-resume-hint-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.card-resume-hint-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.card-resume-hint-close:hover {
+  color: var(--text);
+}
+
+.card-resume-hint-cmd {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  padding: 4px 8px;
+  border-radius: 4px;
+  user-select: all;
+  cursor: text;
 }
 
 .card-time {
@@ -1025,7 +1095,68 @@ main {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
-  padding: 0 4px;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.pip-group-label:hover {
+  background: var(--surface-hover);
+}
+
+.pip-chevron {
+  font-size: 8px;
+  transition: transform 0.2s;
+  display: inline-block;
+}
+
+.pip-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.pip-group-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.pip-card-wrap {
+  position: relative;
+}
+
+.pip-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  z-index: 2;
+}
+
+.pip-card-wrap:hover .pip-dismiss {
+  opacity: 1;
+}
+
+.pip-dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 /* ── Scrollbar ───────────────────────────────────────── */

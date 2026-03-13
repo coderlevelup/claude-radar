@@ -1,7 +1,7 @@
 {
-  "name": "claude-kanban",
+  "name": "claude-radar",
   "version": "1.0.0",
-  "description": "Live Kanban board for Claude Code conversations",
+  "description": "Live radar dashboard for Claude Code conversations",
   "type": "module",
   "main": "server.js",
   "scripts": {

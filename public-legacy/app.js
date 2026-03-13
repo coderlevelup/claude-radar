@@ -20,8 +20,8 @@
   let expandedSessionId = null;
 
   // ── Persistent state (localStorage) ─────────────────
-  const STORAGE_ORDER = 'kanban-project-order';
-  const STORAGE_COLLAPSED = 'kanban-collapsed';
+  const STORAGE_ORDER = 'radar-project-order';
+  const STORAGE_COLLAPSED = 'radar-collapsed';
 
   let projectOrder = JSON.parse(localStorage.getItem(STORAGE_ORDER) || '[]');
   const collapsed = new Set(JSON.parse(localStorage.getItem(STORAGE_COLLAPSED) || '[]'));
