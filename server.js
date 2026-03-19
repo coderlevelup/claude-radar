@@ -24,6 +24,27 @@ const activityMap = new Map();
 // key: sessionId, value: string
 const blurbCache = new Map();
 
+// AI-generated titles — persisted to titles.json
+// key: sessionId, value: { title: string, fileSize: number }
+const titleCache = new Map();
+const TITLE_CACHE_PATH = path.join(__dirname, 'titles.json');
+
+function loadTitleCache() {
+  try {
+    const data = JSON.parse(fs.readFileSync(TITLE_CACHE_PATH, 'utf-8'));
+    for (const [id, entry] of Object.entries(data)) {
+      titleCache.set(id, entry);
+    }
+  } catch {}
+}
+
+function saveTitleCache() {
+  const obj = Object.fromEntries(titleCache);
+  fs.writeFileSync(TITLE_CACHE_PATH, JSON.stringify(obj), 'utf-8');
+}
+
+loadTitleCache();
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -101,14 +122,54 @@ async function generateBlurb(sessionId) {
   }
 }
 
+// Generate a short title via Haiku
+async function generateTitle(sessionId) {
+  const filePath = findSessionFile(sessionId);
+  if (!filePath) return;
+
+  let fileSize = 0;
+  try { fileSize = fs.statSync(filePath).size; } catch { return; }
+
+  const turns = readRecentConversation(filePath);
+  if (turns.length === 0) {
+    titleCache.set(sessionId, { title: '', fileSize });
+    saveTitleCache();
+    return;
+  }
+
+  const convo = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
+
+  try {
+    const resp = await bedrock.messages.create({
+      model: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+      max_tokens: 40,
+      messages: [{
+        role: 'user',
+        content: `Summarize this coding session in 3-8 words as a title. No quotes, no punctuation, no preamble. Just the title.\n\n${convo}`,
+      }],
+    });
+    const title = (resp.content[0] && resp.content[0].text || '').trim();
+    if (title) {
+      titleCache.set(sessionId, { title, fileSize });
+      saveTitleCache();
+    }
+  } catch (err) {
+    console.error('Title generation failed:', err.message);
+    // Cache a skip marker so we don't retry on every restart
+    titleCache.set(sessionId, { title: '', fileSize });
+    saveTitleCache();
+  }
+}
+
 // Hook endpoint — receives activity events from Claude Code hooks
 app.post('/api/activity', (req, res) => {
   const { sessionId, event } = req.body || {};
   if (!sessionId || !event) return res.status(400).json({ error: 'missing sessionId or event' });
   activityMap.set(sessionId, { event, timestamp: Date.now() });
 
-  // Generate blurb asynchronously on stop events
+  // Generate title and blurb asynchronously on stop events
   if (event === 'stop') {
+    generateTitle(sessionId).catch(() => {});
     generateBlurb(sessionId).catch(() => {});
   }
 
@@ -117,8 +178,8 @@ app.post('/api/activity', (req, res) => {
 
 // Determine session status. Uses hook-reported activity when available,
 // falls back to file-tail heuristics for sessions without hook data.
-// Read the last assistant message from the tail of a .jsonl file
-function readLastAssistantMessage(filePath) {
+// Read tail lines from a .jsonl file (shared helper)
+function readTailLines(filePath) {
   try {
     const fd = fs.openSync(filePath, 'r');
     const stat = fs.fstatSync(fd);
@@ -127,14 +188,32 @@ function readLastAssistantMessage(filePath) {
     const buf = Buffer.alloc(readSize);
     fs.readSync(fd, buf, 0, readSize, size - readSize);
     fs.closeSync(fd);
-    const lines = buf.toString('utf-8').split('\n').filter(l => l.trim());
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const obj = JSON.parse(lines[i]);
-        if (obj.type === 'assistant' || obj.type === 'user') return obj;
-      } catch { /* partial line */ }
-    }
+    return buf.toString('utf-8').split('\n').filter(l => l.trim());
   } catch {}
+  return [];
+}
+
+// Read the last message (any type) from the tail of a .jsonl file
+function readLastMessage(filePath) {
+  const lines = readTailLines(filePath);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      if (obj.type === 'assistant' || obj.type === 'user') return obj;
+    } catch { /* partial line */ }
+  }
+  return null;
+}
+
+// Read the last assistant-only message from the tail of a .jsonl file
+function readLastAssistantMessage(filePath) {
+  const lines = readTailLines(filePath);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      if (obj.type === 'assistant') return obj;
+    } catch { /* partial line */ }
+  }
   return null;
 }
 
@@ -181,16 +260,19 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
       return 'idle';
     }
     if (activity.event === 'idle') {
+      // Don't downgrade to idle if the session is waiting for user input
+      const lastMsg = readLastAssistantMessage(filePath);
+      if (isWaitingForInput(lastMsg)) return 'waiting';
       return 'idle';
     }
   }
 
   // Fallback: file-based heuristic for sessions without hook data
   const fileAge = now - mtimeMs;
-  const lastMsg = readLastAssistantMessage(filePath);
-  if (!lastMsg) return 'idle';
 
   if (fileAge < 30000) {
+    const lastMsg = readLastMessage(filePath);
+    if (!lastMsg) return 'idle';
     if (lastMsg.type === 'assistant') {
       const stopReason = (lastMsg.message || {}).stop_reason || null;
       if (stopReason === null || stopReason === 'tool_use') return 'working';
@@ -207,7 +289,8 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
   }
 
   if (fileAge < 3600000) {
-    return isWaitingForInput(lastMsg) ? 'waiting' : 'idle';
+    const lastAssistant = readLastAssistantMessage(filePath);
+    return isWaitingForInput(lastAssistant) ? 'waiting' : 'idle';
   }
   return 'idle';
 }
@@ -423,8 +506,11 @@ app.get('/api/sessions', (req, res) => {
       const blurb = blurbCache.get(sessionId) || (parsed ? parsed.blurb : '');
       const parsedSummary = parsed ? parsed.summary : '';
 
+      const cachedEntry = titleCache.get(sessionId);
+      const cachedTitle = cachedEntry ? cachedEntry.title : '';
+
       if (indexed) {
-        title = indexed.summary || parsedSummary || '';
+        title = indexed.summary || cachedTitle || parsedSummary || '';
         firstPrompt = indexed.firstPrompt || '';
         messageCount = indexed.messageCount || (parsed ? parsed.messageCount : 0);
         gitBranch = indexed.gitBranch || '';
@@ -436,7 +522,7 @@ app.get('/api/sessions', (req, res) => {
         firstPrompt = parsed ? parsed.firstPrompt : '';
         messageCount = parsed ? parsed.messageCount : 0;
         status = detectSessionStatus(sessionId, filePath, lastActivity);
-        title = parsedSummary || '';
+        title = cachedTitle || parsedSummary || '';
         gitBranch = '';
         created = new Date(fileCreated).toISOString();
         isSidechain = false;
@@ -697,6 +783,72 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// On startup, generate titles for sessions that don't have one.
+// Processes sequentially with a small delay to avoid hammering Bedrock.
+async function refreshTitles() {
+  let dirEntries;
+  try {
+    dirEntries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true });
+  } catch { return; }
+
+  const queue = [];
+
+  for (const dirent of dirEntries) {
+    if (!dirent.isDirectory()) continue;
+    const projectDir = path.join(PROJECTS_DIR, dirent.name);
+
+    // Check for indexed summaries
+    let indexedSummaries = new Map();
+    try {
+      const raw = fs.readFileSync(path.join(projectDir, 'sessions-index.json'), 'utf-8');
+      const indexData = JSON.parse(raw);
+      for (const entry of (indexData.entries || [])) {
+        if (entry.summary) indexedSummaries.set(entry.sessionId, true);
+      }
+    } catch {}
+
+    let files;
+    try {
+      files = fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl'));
+    } catch { continue; }
+
+    for (const file of files) {
+      const sessionId = path.basename(file, '.jsonl');
+      if (indexedSummaries.has(sessionId)) continue;
+
+      const filePath = path.join(projectDir, file);
+
+      // Check for parsed summary in the file
+      const parsed = parseSessionFile(filePath);
+      if (parsed && parsed.summary) continue;
+      if (!parsed || !parsed.firstPrompt) continue; // empty session
+
+      // Skip if cached title exists and file hasn't grown by >10KB
+      const cached = titleCache.get(sessionId);
+      if (cached) {
+        let currentSize = 0;
+        try { currentSize = fs.statSync(filePath).size; } catch { continue; }
+        if (currentSize - cached.fileSize < 10240) continue;
+      }
+
+      queue.push(sessionId);
+    }
+  }
+
+  if (queue.length === 0) return;
+  console.log(`Generating titles for ${queue.length} sessions...`);
+
+  for (const sessionId of queue) {
+    try {
+      await generateTitle(sessionId);
+    } catch {}
+    // Small delay between requests
+    await new Promise(r => setTimeout(r, 200));
+  }
+  console.log(`Title generation complete.`);
+}
+
 app.listen(PORT, () => {
   console.log(`Claude Radar → http://localhost:${PORT}`);
+  refreshTitles().catch(err => console.error('refreshTitles failed:', err.message));
 });

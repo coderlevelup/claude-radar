@@ -90,7 +90,7 @@
   {#if !isCollapsed}
     <div class="swimlane-body" style="grid-template-columns: repeat({columns.length}, 1fr)">
       {#each columns as col}
-        <Column label={col.label} sessions={col.sessions} dirName={project.dirName} />
+        <Column label={col.label} sessions={col.sessions} dirName={project.dirName} projectName={project.projectName} projectPath={project.projectPath} />
       {/each}
     </div>
   {/if}

@@ -1,7 +1,7 @@
 <script>
   import Card from './Card.svelte';
 
-  let { label, sessions = [], dirName } = $props();
+  let { label, sessions = [], dirName, projectName = '', projectPath = '' } = $props();
 </script>
 
 <div class="column">
@@ -13,7 +13,7 @@
     <div class="empty-col">No sessions</div>
   {:else}
     {#each sessions as session (session.sessionId)}
-      <Card {session} {dirName} />
+      <Card {session} {dirName} {projectName} {projectPath} />
     {/each}
   {/if}
 </div>
