@@ -20,30 +20,41 @@ const fileCache = new Map(); // key: filePath, value: { mtime, data }
 // key: sessionId, value: { event, timestamp }
 const activityMap = new Map();
 
-// AI-generated blurbs — populated on stop events via Haiku
-// key: sessionId, value: string
-const blurbCache = new Map();
-
-// AI-generated titles — persisted to titles.json
-// key: sessionId, value: { title: string, fileSize: number }
-const titleCache = new Map();
-const TITLE_CACHE_PATH = path.join(__dirname, 'titles.json');
-
-function loadTitleCache() {
+// Persistent cache helper: stores { value: string, fileSize: number } per session
+function createPersistentCache(filePath) {
+  const map = new Map();
   try {
-    const data = JSON.parse(fs.readFileSync(TITLE_CACHE_PATH, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     for (const [id, entry] of Object.entries(data)) {
-      titleCache.set(id, entry);
+      // Migrate old { title, fileSize } format
+      if (entry.value === undefined && entry.title !== undefined) {
+        map.set(id, { value: entry.title, fileSize: entry.fileSize });
+      } else {
+        map.set(id, entry);
+      }
     }
   } catch {}
+  return {
+    get(id) { return map.get(id); },
+    has(id) { return map.has(id); },
+    set(id, value, fileSize) {
+      map.set(id, { value, fileSize });
+      const obj = Object.fromEntries(map);
+      fs.writeFileSync(filePath, JSON.stringify(obj), 'utf-8');
+    },
+    needsRefresh(id, sessionFilePath) {
+      const cached = map.get(id);
+      if (!cached || !cached.value) return true;
+      try {
+        const currentSize = fs.statSync(sessionFilePath).size;
+        return currentSize - cached.fileSize >= 10240;
+      } catch { return false; }
+    },
+  };
 }
 
-function saveTitleCache() {
-  const obj = Object.fromEntries(titleCache);
-  fs.writeFileSync(TITLE_CACHE_PATH, JSON.stringify(obj), 'utf-8');
-}
-
-loadTitleCache();
+const titleCache = createPersistentCache(path.join(__dirname, 'titles.json'));
+const blurbCache = createPersistentCache(path.join(__dirname, 'blurbs.json'));
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -96,13 +107,28 @@ function readRecentConversation(filePath) {
   return [];
 }
 
+// Detect Haiku refusal/meta-responses (e.g. "I don't have a coding session...")
+function isHaikuRefusal(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (t.startsWith('i don') || t.startsWith('i can') || t.startsWith('i need')
+    || t.startsWith('there') || t.startsWith('no coding')
+    || t.includes('coding session') || t.includes('to summarize'));
+}
+
 // Generate a tweet-length blurb via Haiku
 async function generateBlurb(sessionId) {
   const filePath = findSessionFile(sessionId);
   if (!filePath) return;
 
+  let fileSize = 0;
+  try { fileSize = fs.statSync(filePath).size; } catch { return; }
+
   const turns = readRecentConversation(filePath);
-  if (turns.length === 0) return;
+  if (turns.length === 0) {
+    blurbCache.set(sessionId, '', fileSize);
+    return;
+  }
 
   const convo = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
 
@@ -115,11 +141,18 @@ async function generateBlurb(sessionId) {
         content: `Summarize this coding session in one sentence (under 200 chars), like a tweet. Focus on what was accomplished or is in progress. No hashtags or emoji. Just the substance.\n\n${convo}`,
       }],
     });
-    const blurb = (resp.content[0] && resp.content[0].text || '').trim();
-    if (blurb) blurbCache.set(sessionId, blurb);
+    let blurb = (resp.content[0] && resp.content[0].text || '').trim();
+    if (isHaikuRefusal(blurb)) blurb = '';
+    blurbCache.set(sessionId, blurb, fileSize);
   } catch (err) {
     console.error('Blurb generation failed:', err.message);
+    blurbCache.set(sessionId, '', fileSize);
   }
+}
+
+// needsTitle/needsBlurb are just wrappers around the cache's needsRefresh
+function needsTitle(sessionId, filePath) {
+  return titleCache.needsRefresh(sessionId, filePath);
 }
 
 // Generate a short title via Haiku
@@ -132,8 +165,7 @@ async function generateTitle(sessionId) {
 
   const turns = readRecentConversation(filePath);
   if (turns.length === 0) {
-    titleCache.set(sessionId, { title: '', fileSize });
-    saveTitleCache();
+    titleCache.set(sessionId, '', fileSize);
     return;
   }
 
@@ -148,16 +180,13 @@ async function generateTitle(sessionId) {
         content: `Summarize this coding session in 3-8 words as a title. No quotes, no punctuation, no preamble. Just the title.\n\n${convo}`,
       }],
     });
-    const title = (resp.content[0] && resp.content[0].text || '').trim();
-    if (title) {
-      titleCache.set(sessionId, { title, fileSize });
-      saveTitleCache();
-    }
+    let title = (resp.content[0] && resp.content[0].text || '').trim();
+    // Discard Haiku refusals/meta-responses
+    if (isHaikuRefusal(title)) title = '';
+    titleCache.set(sessionId, title, fileSize);
   } catch (err) {
     console.error('Title generation failed:', err.message);
-    // Cache a skip marker so we don't retry on every restart
-    titleCache.set(sessionId, { title: '', fileSize });
-    saveTitleCache();
+    titleCache.set(sessionId, '', fileSize);
   }
 }
 
@@ -167,10 +196,13 @@ app.post('/api/activity', (req, res) => {
   if (!sessionId || !event) return res.status(400).json({ error: 'missing sessionId or event' });
   activityMap.set(sessionId, { event, timestamp: Date.now() });
 
-  // Generate title and blurb asynchronously on stop events
+  // Generate title and blurb on stop events (if stale)
   if (event === 'stop') {
-    generateTitle(sessionId).catch(() => {});
-    generateBlurb(sessionId).catch(() => {});
+    const filePath = findSessionFile(sessionId);
+    if (filePath) {
+      if (needsTitle(sessionId, filePath)) generateTitle(sessionId).catch(() => {});
+      if (blurbCache.needsRefresh(sessionId, filePath)) generateBlurb(sessionId).catch(() => {});
+    }
   }
 
   res.json({ ok: true });
@@ -349,7 +381,6 @@ function parseSessionFile(filePath) {
 
   const sessionId = path.basename(filePath, '.jsonl');
 
-  let blurb = '';
   let summary = '';
 
   try {
@@ -398,30 +429,15 @@ function parseSessionFile(filePath) {
       if (firstPrompt && parentSessionId) break;
     }
 
-    // Extract summary and blurb from the tail
+    // Extract summary from the tail
     const tailLines = tailBuf.toString('utf-8').split('\n').filter(l => l.trim());
     for (let i = tailLines.length - 1; i >= 0; i--) {
       try {
         const obj = JSON.parse(tailLines[i]);
         if (obj.type === 'summary' && obj.summary) {
           summary = obj.summary;
+          break;
         }
-        if (!blurb && obj.type === 'assistant' && obj.message) {
-          const content = obj.message.content;
-          if (Array.isArray(content)) {
-            // Collect text blocks from this message
-            const texts = [];
-            for (const c of content) {
-              if (c && c.type === 'text' && c.text) texts.push(c.text);
-            }
-            if (texts.length) {
-              blurb = texts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 280);
-            }
-          } else if (typeof content === 'string' && content.trim()) {
-            blurb = content.replace(/\s+/g, ' ').trim().slice(0, 280);
-          }
-        }
-        if (blurb && summary) break;
       } catch { /* partial line */ }
     }
 
@@ -432,7 +448,7 @@ function parseSessionFile(filePath) {
     // Unreadable file
   }
 
-  const data = { firstPrompt, messageCount, parentSessionId, blurb, summary };
+  const data = { firstPrompt, messageCount, parentSessionId, summary };
   fileCache.set(filePath, { mtime: mtimeMs, data });
   return data;
 }
@@ -503,11 +519,12 @@ app.get('/api/sessions', (req, res) => {
       const indexed = indexedById.get(sessionId);
 
       let title, firstPrompt, messageCount, gitBranch, created, isSidechain, status;
-      const blurb = blurbCache.get(sessionId) || (parsed ? parsed.blurb : '');
+      const blurbEntry = blurbCache.get(sessionId);
+      const blurb = blurbEntry ? blurbEntry.value : '';
       const parsedSummary = parsed ? parsed.summary : '';
 
-      const cachedEntry = titleCache.get(sessionId);
-      const cachedTitle = cachedEntry ? cachedEntry.title : '';
+      const titleEntry = titleCache.get(sessionId);
+      const cachedTitle = titleEntry ? titleEntry.value : '';
 
       if (indexed) {
         title = indexed.summary || cachedTitle || parsedSummary || '';
@@ -783,21 +800,22 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// On startup, generate titles for sessions that don't have one.
+// On startup, refresh titles and blurbs for sessions that need them.
 // Processes sequentially with a small delay to avoid hammering Bedrock.
-async function refreshTitles() {
+async function refreshCaches() {
   let dirEntries;
   try {
     dirEntries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true });
   } catch { return; }
 
-  const queue = [];
+  const titleQueue = [];
+  const blurbQueue = [];
 
   for (const dirent of dirEntries) {
     if (!dirent.isDirectory()) continue;
     const projectDir = path.join(PROJECTS_DIR, dirent.name);
 
-    // Check for indexed summaries
+    // Check for indexed summaries (title not needed for these)
     let indexedSummaries = new Map();
     try {
       const raw = fs.readFileSync(path.join(projectDir, 'sessions-index.json'), 'utf-8');
@@ -814,41 +832,40 @@ async function refreshTitles() {
 
     for (const file of files) {
       const sessionId = path.basename(file, '.jsonl');
-      if (indexedSummaries.has(sessionId)) continue;
-
       const filePath = path.join(projectDir, file);
 
-      // Check for parsed summary in the file
       const parsed = parseSessionFile(filePath);
-      if (parsed && parsed.summary) continue;
       if (!parsed || !parsed.firstPrompt) continue; // empty session
 
-      // Skip if cached title exists and file hasn't grown by >10KB
-      const cached = titleCache.get(sessionId);
-      if (cached) {
-        let currentSize = 0;
-        try { currentSize = fs.statSync(filePath).size; } catch { continue; }
-        if (currentSize - cached.fileSize < 10240) continue;
-      }
+      const needsTitleRefresh = !indexedSummaries.has(sessionId)
+        && !(parsed && parsed.summary)
+        && needsTitle(sessionId, filePath);
+      if (needsTitleRefresh) titleQueue.push(sessionId);
 
-      queue.push(sessionId);
+      if (blurbCache.needsRefresh(sessionId, filePath)) blurbQueue.push(sessionId);
     }
   }
 
-  if (queue.length === 0) return;
-  console.log(`Generating titles for ${queue.length} sessions...`);
-
-  for (const sessionId of queue) {
-    try {
-      await generateTitle(sessionId);
-    } catch {}
-    // Small delay between requests
-    await new Promise(r => setTimeout(r, 200));
+  if (titleQueue.length > 0) {
+    console.log(`Generating titles for ${titleQueue.length} sessions...`);
+    for (const sessionId of titleQueue) {
+      try { await generateTitle(sessionId); } catch {}
+      await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`Title generation complete.`);
   }
-  console.log(`Title generation complete.`);
+
+  if (blurbQueue.length > 0) {
+    console.log(`Generating blurbs for ${blurbQueue.length} sessions...`);
+    for (const sessionId of blurbQueue) {
+      try { await generateBlurb(sessionId); } catch {}
+      await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`Blurb generation complete.`);
+  }
 }
 
 app.listen(PORT, () => {
   console.log(`Claude Radar → http://localhost:${PORT}`);
-  refreshTitles().catch(err => console.error('refreshTitles failed:', err.message));
+  refreshCaches().catch(err => console.error('refreshCaches failed:', err.message));
 });
