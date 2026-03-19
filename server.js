@@ -327,6 +327,37 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
   return 'idle';
 }
 
+// Resolve a project dirName (e.g. "-Users-DavidCampey-clode-claude-kanban")
+// back to a real filesystem path. Hyphens are ambiguous (path separator vs literal),
+// so we walk the filesystem to find the matching directory.
+const projectPathCache = new Map();
+function resolveProjectPath(dirName) {
+  if (projectPathCache.has(dirName)) return projectPathCache.get(dirName);
+
+  const parts = dirName.replace(/^-/, '').split('-');
+
+  function walk(idx, currentPath) {
+    if (idx >= parts.length) {
+      try {
+        if (fs.statSync(currentPath).isDirectory()) return currentPath;
+      } catch {}
+      return null;
+    }
+    // Try consuming progressively more parts as a single segment (with hyphens)
+    for (let end = parts.length; end > idx; end--) {
+      const segment = parts.slice(idx, end).join('-');
+      const candidate = path.join(currentPath, segment);
+      const result = walk(end, candidate);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  const resolved = walk(0, '/') || '/' + parts.join('/');
+  projectPathCache.set(dirName, resolved);
+  return resolved;
+}
+
 // System artifacts injected by Claude Code that aren't real user prompts
 const ARTIFACT_PREFIXES = [
   '[Request interrupted',
@@ -618,7 +649,11 @@ app.get('/api/sessions', (req, res) => {
 
     if (sessions.length === 0) continue;
 
-    const projectName = projectPath ? path.basename(projectPath) : dirent.name;
+    // Derive projectPath from dirName if not set from sessions-index.json
+    if (!projectPath) {
+      projectPath = resolveProjectPath(dirent.name);
+    }
+    const projectName = path.basename(projectPath);
 
     projects.push({
       dirName: dirent.name,
