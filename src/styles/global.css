@@ -1074,6 +1074,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-y: auto;
+  height: 100vh;
 }
 
 .pip-empty {

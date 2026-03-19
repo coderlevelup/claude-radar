@@ -45,11 +45,11 @@
       // Auto-resize PiP window to fit content
       const PIP_WIDTH = 380;
       const PIP_MIN_H = 120;
-      const PIP_MAX_H = 800;
+      const PIP_MAX_H = screen.availHeight;
       const contentEl = pipWindow.document.querySelector('.pip-container');
       const resizeObserver = new ResizeObserver(() => {
         if (!contentEl) return;
-        const contentH = contentEl.offsetHeight;
+        const contentH = contentEl.scrollHeight;
         const chrome = pipWindow.outerHeight - pipWindow.innerHeight;
         const targetH = Math.min(PIP_MAX_H, Math.max(PIP_MIN_H, contentH + chrome));
         if (Math.abs(pipWindow.outerHeight - targetH) > 4) {
