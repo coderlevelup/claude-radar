@@ -15,11 +15,11 @@
     // Read/write collapsed state untracked to avoid circular dependency
     untrack(() => {
       for (const p of projects) {
-        const prev = sessions.lastMostRecent.get(p.dirName);
-        if (prev !== undefined && p.mostRecent > prev && ui.isCollapsed(p.dirName)) {
-          ui.toggleCollapsed(p.dirName);
+        const prev = sessions.lastMostRecent.get(p.swimlaneKey);
+        if (prev !== undefined && p.mostRecent > prev && ui.isCollapsed(p.swimlaneKey)) {
+          ui.toggleCollapsed(p.swimlaneKey);
         }
-        sessions.lastMostRecent.set(p.dirName, p.mostRecent);
+        sessions.lastMostRecent.set(p.swimlaneKey, p.mostRecent);
       }
     });
   });
@@ -46,17 +46,17 @@
   });
 </script>
 
-{#each sorted as project (project.dirName)}
+{#each sorted as project (project.swimlaneKey)}
   <Swimlane
     {project}
-    dragging={dragSrcDir === project.dirName}
-    dragOver={dragOverDir === project.dirName && dragSrcDir !== project.dirName}
-    ondragstart={(dir) => { dragSrcDir = dir; }}
+    dragging={dragSrcDir === project.swimlaneKey}
+    dragOver={dragOverDir === project.swimlaneKey && dragSrcDir !== project.swimlaneKey}
+    ondragstart={(key) => { dragSrcDir = key; }}
     ondragend={() => { dragSrcDir = null; dragOverDir = null; }}
-    ondragover={(dir) => { if (dragSrcDir && dragSrcDir !== dir) dragOverDir = dir; }}
-    ondrop={(dir) => {
-      if (dragSrcDir && dragSrcDir !== dir) {
-        ui.reorder(dragSrcDir, dir);
+    ondragover={(key) => { if (dragSrcDir && dragSrcDir !== key) dragOverDir = key; }}
+    ondrop={(key) => {
+      if (dragSrcDir && dragSrcDir !== key) {
+        ui.reorder(dragSrcDir, key);
       }
       dragSrcDir = null;
       dragOverDir = null;

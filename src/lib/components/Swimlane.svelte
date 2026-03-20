@@ -5,7 +5,7 @@
 
   let { project, dragging = false, dragOver = false, ondragstart, ondragend, ondragover, ondrop } = $props();
 
-  let isCollapsed = $derived(ui.isCollapsed(project.dirName));
+  let isCollapsed = $derived(ui.isCollapsed(project.swimlaneKey));
 
   // Group sessions into columns
   let groups = $derived.by(() => {
@@ -42,12 +42,12 @@
 
   function handleHeaderClick(e) {
     if (e.target.closest('.swimlane-drag')) return;
-    ui.toggleCollapsed(project.dirName);
+    ui.toggleCollapsed(project.swimlaneKey);
   }
 
   function handleDragStart(e) {
     e.dataTransfer.effectAllowed = 'move';
-    ondragstart?.(project.dirName);
+    ondragstart?.(project.swimlaneKey);
   }
 </script>
 
@@ -61,12 +61,12 @@
   ondragover={(e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    ondragover?.(project.dirName);
+    ondragover?.(project.swimlaneKey);
   }}
   ondragleave={() => {}}
   ondrop={(e) => {
     e.preventDefault();
-    ondrop?.(project.dirName);
+    ondrop?.(project.swimlaneKey);
   }}
 >
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -81,8 +81,14 @@
     <div class="swimlane-title">
       <span class="swimlane-drag">&equiv;</span>
       <span class="swimlane-chevron">&#9660;</span>
-      <span class="swimlane-name">{project.projectName}</span>
-      <span class="swimlane-path">{project.projectPath}</span>
+      {#if project.swimlaneUrl}
+        <a class="swimlane-name swimlane-link" href={project.swimlaneUrl}
+           target="_blank" onclick={(e) => e.stopPropagation()}>
+          {project.projectName}{project.branch ? `/${project.branch}` : ''}
+        </a>
+      {:else}
+        <span class="swimlane-name">{project.projectPath}</span>
+      {/if}
     </div>
     <span class="swimlane-count">{project.sessions.length} sessions</span>
   </div>

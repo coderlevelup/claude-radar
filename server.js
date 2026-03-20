@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 6767;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const currentUsername = (() => { try { return os.userInfo().username; } catch { return ''; } })();
 
 const bedrock = new AnthropicBedrock({ aws_region: process.env.AWS_REGION || 'eu-west-1' });
 
@@ -358,6 +359,90 @@ function resolveProjectPath(dirName) {
   return resolved;
 }
 
+// Normalize a git remote URL to canonical HTTPS form
+function normalizeGitUrl(url) {
+  url = url.trim();
+  const sshMatch = url.match(/^git@([^:]+):(.+)$/);
+  if (sshMatch) url = `https://${sshMatch[1]}/${sshMatch[2]}`;
+  return url.replace(/\.git$/, '');
+}
+
+// Parse [remote "name"] sections from git config text
+function parseGitRemotes(text) {
+  const remotes = {};
+  let current = null;
+  for (const line of text.split('\n')) {
+    const secMatch = line.match(/^\[remote\s+"([^"]+)"\]/);
+    if (secMatch) { current = secMatch[1]; remotes[current] = {}; continue; }
+    if (current && line.match(/^\[/)) current = null;
+    if (current) {
+      const kv = line.match(/^\s*(\w+)\s*=\s*(.+)$/);
+      if (kv) remotes[current][kv[1]] = kv[2].trim();
+    }
+  }
+  return remotes;
+}
+
+// Cache git repo info — remotes don't change mid-session
+const repoInfoCache = new Map();
+
+function getRepoInfo(projectPath) {
+  if (repoInfoCache.has(projectPath)) return repoInfoCache.get(projectPath);
+  const empty = { repoUrl: '', branch: '' };
+  try {
+    let gitDir = path.join(projectPath, '.git');
+    let gitStat;
+    try { gitStat = fs.statSync(gitDir); } catch { repoInfoCache.set(projectPath, empty); return empty; }
+
+    // Worktree support: .git may be a file pointing to the real gitdir
+    if (!gitStat.isDirectory()) {
+      const content = fs.readFileSync(gitDir, 'utf-8').trim();
+      const m = content.match(/^gitdir:\s*(.+)$/);
+      if (!m) { repoInfoCache.set(projectPath, empty); return empty; }
+      gitDir = path.resolve(projectPath, m[1]);
+    }
+
+    let branch = '';
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
+      const m = head.match(/^ref:\s*refs\/heads\/(.+)$/);
+      if (m) branch = m[1];
+    } catch {}
+
+    let repoUrl = '';
+    try {
+      const configText = fs.readFileSync(path.join(gitDir, 'config'), 'utf-8');
+      const remotes = parseGitRemotes(configText);
+      const remote = remotes['origin'] || remotes[Object.keys(remotes)[0]];
+      if (remote && remote.url) repoUrl = normalizeGitUrl(remote.url);
+    } catch {}
+
+    const result = { repoUrl, branch };
+    repoInfoCache.set(projectPath, result);
+    return result;
+  } catch {
+    repoInfoCache.set(projectPath, empty);
+    return empty;
+  }
+}
+
+// Per-project radar.json config cache
+const radarConfigCache = new Map();
+
+function readRadarConfig(projectPath) {
+  const configPath = path.join(projectPath, '.claude', 'radar.json');
+  try {
+    const mtime = fs.statSync(configPath).mtimeMs;
+    const cached = radarConfigCache.get(projectPath);
+    if (cached && cached.mtime === mtime) return cached.config;
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    radarConfigCache.set(projectPath, { mtime, config });
+    return config;
+  } catch {
+    return null;
+  }
+}
+
 // System artifacts injected by Claude Code that aren't real user prompts
 const ARTIFACT_PREFIXES = [
   '[Request interrupted',
@@ -583,6 +668,8 @@ app.get('/api/sessions', (req, res) => {
 
       rawSessions.push({
         sessionId,
+        dirName: dirent.name,
+        username: currentUsername,
         parentSessionId,
         title: cleanTitle(title || firstPrompt) || '(no title)',
         blurb: blurb || '',
@@ -653,23 +740,47 @@ app.get('/api/sessions', (req, res) => {
     if (!projectPath) {
       projectPath = resolveProjectPath(dirent.name);
     }
-    const projectName = path.basename(projectPath);
+
+    const { repoUrl, branch } = getRepoInfo(projectPath);
+    const radarConfig = readRadarConfig(projectPath);
+    const folderName = path.basename(projectPath);
+    const repoBasename = repoUrl ? repoUrl.split('/').pop() : '';
+    const projectName = radarConfig?.swimlane?.name || repoBasename || folderName;
+    const swimlaneKey = repoUrl ? `${repoUrl}#${branch}` : dirent.name;
+    const swimlaneUrl = radarConfig?.swimlane?.url
+      || (repoUrl && branch ? `${repoUrl}/tree/${branch}` : repoUrl || '');
 
     projects.push({
       dirName: dirent.name,
+      swimlaneKey,
       projectName,
       projectPath,
+      repoUrl,
+      branch,
+      swimlaneUrl,
       mostRecent: new Date(mostRecent).toISOString(),
       sessions,
     });
   }
 
-  projects.sort((a, b) => new Date(b.mostRecent) - new Date(a.mostRecent));
+  // Merge projects that share the same swimlaneKey (same repo + branch)
+  const mergedMap = new Map();
+  for (const p of projects) {
+    if (mergedMap.has(p.swimlaneKey)) {
+      const existing = mergedMap.get(p.swimlaneKey);
+      existing.sessions.push(...p.sessions);
+      if (p.mostRecent > existing.mostRecent) existing.mostRecent = p.mostRecent;
+    } else {
+      mergedMap.set(p.swimlaneKey, { ...p, sessions: [...p.sessions] });
+    }
+  }
+  const mergedProjects = [...mergedMap.values()];
+  mergedProjects.sort((a, b) => new Date(b.mostRecent) - new Date(a.mostRecent));
 
-  const totalProjects = projects.length;
-  const totalSessions = projects.reduce((sum, p) => sum + p.sessions.length, 0);
+  const totalProjects = mergedProjects.length;
+  const totalSessions = mergedProjects.reduce((sum, p) => sum + p.sessions.length, 0);
 
-  res.json({ totalProjects, totalSessions, projects });
+  res.json({ currentUsername, totalProjects, totalSessions, projects: mergedProjects });
 });
 
 // Return parsed conversation for a single session

@@ -10,8 +10,8 @@
   --text: #e4e4e7;
   --text-muted: #71717a;
   --text-dim: #52525b;
-  --accent: #c084fc;
-  --accent-dim: rgba(192, 132, 252, 0.12);
+  --accent: #4ade80;
+  --accent-dim: rgba(74, 222, 128, 0.12);
   --blue: #60a5fa;
   --blue-dim: rgba(96, 165, 250, 0.12);
   --green: #4ade80;
@@ -145,8 +145,34 @@ h1 {
 }
 
 .older-toggle input[type="checkbox"] {
-  accent-color: var(--accent);
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
   cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.older-toggle input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.older-toggle input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: 2px solid #000;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
 }
 
 /* ── Board ───────────────────────────────────────────── */
@@ -226,9 +252,27 @@ main {
 .swimlane-name {
   font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
+  color: var(--text);
+}
+
+.swimlane-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.swimlane-link:hover {
+  text-decoration: underline;
+}
+
+.swimlane-branch {
+  font-size: 10px;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600;
 }
 
 .swimlane-path {

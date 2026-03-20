@@ -1,10 +1,13 @@
 <script>
   import { relativeTime } from '../utils/time.js';
   import { ui } from '../stores/ui.svelte.js';
+  import { sessions } from '../stores/sessions.svelte.js';
   import { focusTerminal } from '../utils/api.js';
   import CardThread from './CardThread.svelte';
 
-  let { session, dirName, projectName = '', projectPath = '' } = $props();
+  let { session, dirName: dirNameProp, projectName = '', projectPath = '' } = $props();
+  let dirName = $derived(session.dirName || dirNameProp);
+  let isLocalSession = $derived(!session.username || session.username === sessions.currentUsername);
 
   const statusLabels = {
     working: '\u25cf working',
@@ -74,14 +77,16 @@
         <span class="badge badge-sidechain">sidechain</span>
       {/if}
     </div>
-    <button class="card-focus-btn" onclick={handleFocus} title="Focus terminal">&gt;_</button>
+    {#if isLocalSession}
+      <button class="card-focus-btn" onclick={handleFocus} title="Focus terminal">&gt;_</button>
+    {/if}
     <div class="card-time">
       <span data-label="active ">{relativeTime(session.modified)}</span>
       <span data-label="created ">{relativeTime(session.created)}</span>
     </div>
   </div>
 
-  {#if resumeHint}
+  {#if resumeHint && isLocalSession}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="card-resume-hint" onclick={(e) => e.stopPropagation()}>

@@ -45,4 +45,5 @@ export const sessions = {
   get connected() { return connected; },
   get fetching() { return fetching; },
   get lastMostRecent() { return lastMostRecent; },
+  get currentUsername() { return data.currentUsername || ''; },
 };

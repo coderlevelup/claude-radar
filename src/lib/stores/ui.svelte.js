@@ -114,19 +114,19 @@ export const ui = {
     // Read order without tracking to avoid circular dependency in $effect
     const order = untrack(() => projectOrder);
     const orderIndex = new Map();
-    order.forEach((dir, i) => orderIndex.set(dir, i));
+    order.forEach((key, i) => orderIndex.set(key, i));
 
     const known = [];
     const unknown = [];
     for (const p of projects) {
-      if (orderIndex.has(p.dirName)) known.push(p);
+      if (orderIndex.has(p.swimlaneKey)) known.push(p);
       else unknown.push(p);
     }
-    known.sort((a, b) => orderIndex.get(a.dirName) - orderIndex.get(b.dirName));
+    known.sort((a, b) => orderIndex.get(a.swimlaneKey) - orderIndex.get(b.swimlaneKey));
     unknown.sort((a, b) => (b.mostRecent > a.mostRecent ? 1 : b.mostRecent < a.mostRecent ? -1 : 0));
 
     const sorted = [...unknown, ...known];
-    const newOrder = sorted.map(p => p.dirName);
+    const newOrder = sorted.map(p => p.swimlaneKey);
     // Defer the write to avoid mutating state during $effect
     queueMicrotask(() => { projectOrder = newOrder; });
     return sorted;
