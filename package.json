@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.26.4",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "ioredis": "^5.10.1"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.4",

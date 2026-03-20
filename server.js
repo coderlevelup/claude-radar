@@ -3,14 +3,32 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
+import valkey from './lib/valkey.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 6767;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const currentUsername = (() => { try { return os.userInfo().username; } catch { return ''; } })();
+const { currentUsername, avatarUrl } = (() => {
+  // 1. gh CLI — gives both login and avatar_url in one call
+  try {
+    const raw = execFileSync('gh', ['api', 'user'], { encoding: 'utf-8', timeout: 5000 });
+    const user = JSON.parse(raw);
+    if (user.login) return { currentUsername: user.login, avatarUrl: user.avatar_url || '' };
+  } catch {}
+  // 2. Explicit git config (username only, no avatar)
+  try {
+    const r = execFileSync('git', ['config', 'github.user'], { encoding: 'utf-8', timeout: 2000 }).trim();
+    if (r) return { currentUsername: r, avatarUrl: '' };
+  } catch {}
+  // 3. Env var
+  if (process.env.GITHUB_USERNAME) return { currentUsername: process.env.GITHUB_USERNAME, avatarUrl: '' };
+  // 4. OS username, no avatar
+  try { return { currentUsername: os.userInfo().username, avatarUrl: '' }; } catch {}
+  return { currentUsername: '', avatarUrl: '' };
+})();
 
 const bedrock = new AnthropicBedrock({ aws_region: process.env.AWS_REGION || 'eu-west-1' });
 
@@ -21,8 +39,22 @@ const fileCache = new Map(); // key: filePath, value: { mtime, data }
 // key: sessionId, value: { event, timestamp }
 const activityMap = new Map();
 
-// Persistent cache helper: stores { value: string, fileSize: number } per session
-function createPersistentCache(filePath) {
+function setActivity(sessionId, data) {
+  activityMap.set(sessionId, data);
+  if (valkey.connected()) {
+    valkey.client.set(`radar:activity:${sessionId}`, JSON.stringify(data), 'EX', 7200)
+      .catch(err => console.error('Valkey SET activity failed:', err.message));
+  }
+}
+
+function getActivity(sessionId) {
+  return activityMap.get(sessionId);
+}
+
+// Persistent cache helper: stores { value: string, fileSize: number } per session.
+// Always loads from the JSON fallback file at startup. If Valkey is connected,
+// initCaches() will overwrite with Valkey data and future writes go to Valkey only.
+function createPersistentCache(filePath, valkeyKey) {
   const map = new Map();
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -38,10 +70,18 @@ function createPersistentCache(filePath) {
   return {
     get(id) { return map.get(id); },
     has(id) { return map.has(id); },
+    // Used by initCaches() to load Valkey data without triggering a write-back
+    loadEntry(id, entry) { map.set(id, entry); },
     set(id, value, fileSize) {
-      map.set(id, { value, fileSize });
-      const obj = Object.fromEntries(map);
-      fs.writeFileSync(filePath, JSON.stringify(obj), 'utf-8');
+      const entry = { value, fileSize };
+      map.set(id, entry);
+      if (valkey.connected()) {
+        valkey.client.hset(valkeyKey, id, JSON.stringify(entry))
+          .catch(err => console.error(`Valkey HSET ${valkeyKey} failed:`, err.message));
+      } else {
+        const obj = Object.fromEntries(map);
+        fs.writeFileSync(filePath, JSON.stringify(obj), 'utf-8');
+      }
     },
     needsRefresh(id, sessionFilePath) {
       const cached = map.get(id);
@@ -54,8 +94,8 @@ function createPersistentCache(filePath) {
   };
 }
 
-const titleCache = createPersistentCache(path.join(__dirname, 'titles.json'));
-const blurbCache = createPersistentCache(path.join(__dirname, 'blurbs.json'));
+const titleCache = createPersistentCache(path.join(__dirname, 'titles.json'), 'radar:titles');
+const blurbCache = createPersistentCache(path.join(__dirname, 'blurbs.json'), 'radar:blurbs');
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -195,7 +235,7 @@ async function generateTitle(sessionId) {
 app.post('/api/activity', (req, res) => {
   const { sessionId, event } = req.body || {};
   if (!sessionId || !event) return res.status(400).json({ error: 'missing sessionId or event' });
-  activityMap.set(sessionId, { event, timestamp: Date.now() });
+  setActivity(sessionId, { event, timestamp: Date.now() });
 
   // Generate title and blurb on stop events (if stale)
   if (event === 'stop') {
@@ -277,7 +317,7 @@ function detectSessionStatus(sessionId, filePath, mtimeMs) {
   const now = Date.now();
 
   // Check hook-reported activity first
-  const activity = activityMap.get(sessionId);
+  const activity = getActivity(sessionId);
   if (activity) {
     const ageMs = now - activity.timestamp;
 
@@ -670,6 +710,7 @@ app.get('/api/sessions', (req, res) => {
         sessionId,
         dirName: dirent.name,
         username: currentUsername,
+        avatarUrl,
         parentSessionId,
         title: cleanTitle(title || firstPrompt) || '(no title)',
         blurb: blurb || '',
@@ -1054,7 +1095,44 @@ async function refreshCaches() {
   }
 }
 
+// Load Valkey data into local Maps at startup (Valkey wins over JSON fallback)
+async function initCaches() {
+  if (!valkey.connected()) return;
+  try {
+    const [titles, blurbs] = await Promise.all([
+      valkey.client.hgetall('radar:titles'),
+      valkey.client.hgetall('radar:blurbs'),
+    ]);
+    if (titles) {
+      for (const [id, json] of Object.entries(titles)) {
+        try { titleCache.loadEntry(id, JSON.parse(json)); } catch {}
+      }
+    }
+    if (blurbs) {
+      for (const [id, json] of Object.entries(blurbs)) {
+        try { blurbCache.loadEntry(id, JSON.parse(json)); } catch {}
+      }
+    }
+    // Load activity keys
+    const keys = await valkey.client.keys('radar:activity:*');
+    if (keys.length > 0) {
+      const vals = await Promise.all(keys.map(k => valkey.client.get(k)));
+      for (let i = 0; i < keys.length; i++) {
+        if (vals[i]) {
+          const sessionId = keys[i].replace('radar:activity:', '');
+          try { activityMap.set(sessionId, JSON.parse(vals[i])); } catch {}
+        }
+      }
+    }
+    console.log('Valkey caches loaded');
+  } catch (err) {
+    console.error('initCaches failed:', err.message);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Claude Radar → http://localhost:${PORT}`);
-  refreshCaches().catch(err => console.error('refreshCaches failed:', err.message));
+  initCaches()
+    .then(() => refreshCaches())
+    .catch(err => console.error('startup failed:', err.message));
 });

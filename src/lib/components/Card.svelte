@@ -51,38 +51,51 @@
   data-status={statusKey}
   onclick={toggle}
 >
-  <div class="card-title">{session.title}</div>
-
-  {#if session.blurb && !expanded}
-    <div class="card-blurb">{session.blurb}</div>
-  {/if}
-
-  {#if expanded}
-    <div class="card-expanded">
-      {#if session.blurb}
-        <div class="card-blurb-full">{session.blurb}</div>
-      {/if}
-      <CardThread {dirName} {session} sessionId={session.sessionId} status={statusKey} />
-    </div>
-  {/if}
-
-  <div class="card-footer">
-    <div class="card-badges">
-      <span class="badge badge-status-{statusKey}">{statusLabels[statusKey] || statusLabels.idle}</span>
-      <span class="badge badge-messages">{session.messageCount} msgs</span>
-      {#if session.gitBranch}
-        <span class="badge badge-branch" title={session.gitBranch}>{session.gitBranch}</span>
-      {/if}
-      {#if session.isSidechain}
-        <span class="badge badge-sidechain">sidechain</span>
-      {/if}
-    </div>
-    {#if isLocalSession}
-      <button class="card-focus-btn" onclick={handleFocus} title="Focus terminal">&gt;_</button>
+  <div class="card-body">
+    {#if session.avatarUrl}
+      <div class="card-avatar-col">
+        <img src={session.avatarUrl} alt="" class="card-avatar" onerror="this.style.display='none'" />
+      </div>
     {/if}
-    <div class="card-time">
-      <span data-label="active ">{relativeTime(session.modified)}</span>
-      <span data-label="created ">{relativeTime(session.created)}</span>
+
+    <div class="card-content">
+      <div class="card-header">
+        <div class="card-header-left">
+          {#if session.username}
+            <span class="card-username">@{session.username}</span>
+          {/if}
+          <span class="card-time-inline">{relativeTime(session.modified)}</span>
+        </div>
+        {#if isLocalSession}
+          <button class="card-focus-btn" onclick={handleFocus} title="Focus terminal">&gt;_</button>
+        {/if}
+      </div>
+
+      <div class="card-title">{session.title}</div>
+
+      {#if session.blurb && !expanded}
+        <div class="card-blurb">{session.blurb}</div>
+      {/if}
+
+      {#if expanded}
+        <div class="card-expanded">
+          {#if session.blurb}
+            <div class="card-blurb-full">{session.blurb}</div>
+          {/if}
+          <CardThread {dirName} {session} sessionId={session.sessionId} status={statusKey} />
+        </div>
+      {/if}
+
+      <div class="card-footer">
+        <span class="badge badge-status-{statusKey}">{statusLabels[statusKey] || statusLabels.idle}</span>
+        <span class="badge badge-messages">{session.messageCount} msgs</span>
+        {#if session.gitBranch}
+          <span class="badge badge-branch" title={session.gitBranch}>{session.gitBranch}</span>
+        {/if}
+        {#if session.isSidechain}
+          <span class="badge badge-sidechain">sidechain</span>
+        {/if}
+      </div>
     </div>
   </div>
 

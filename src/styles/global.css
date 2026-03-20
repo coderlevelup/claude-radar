@@ -482,18 +482,42 @@ main {
   display: inline-block;
 }
 
-.card-footer {
+.card-body {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.card-avatar-col {
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.card-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-bottom: 3px;
 }
 
-.card-badges {
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.card-footer {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  margin-top: 8px;
 }
 
 .badge {
@@ -565,6 +589,28 @@ main {
   background: var(--surface-hover);
 }
 
+.card-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.card-username {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.card-time-inline {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .card-resume-hint {
   margin-top: 8px;
   padding: 8px 10px;
@@ -609,21 +655,6 @@ main {
   cursor: text;
 }
 
-.card-time {
-  font-size: 11px;
-  color: var(--text-dim);
-  display: flex;
-  gap: 8px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.card-time span::before {
-  content: attr(data-label);
-  color: var(--text-dim);
-  opacity: 0.6;
-  margin-right: 3px;
-}
 
 /* ── Empty state ─────────────────────────────────────── */
 .empty-col {

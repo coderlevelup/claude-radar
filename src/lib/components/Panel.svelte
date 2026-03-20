@@ -108,7 +108,7 @@
         {:else}
           {#each messages as msg}
             <div class="msg msg-{msg.role}">
-              <span class="msg-role">{msg.role === 'assistant' ? 'Claude' : 'David'}</span>
+              <span class="msg-role">{msg.role === 'assistant' ? 'Claude' : (session?.username || 'User')}</span>
               {#each msg.parts as part}
                 {#if part.type === 'text'}
                   <div class="msg-text">{@html escAndFormat(part.text)}</div>
