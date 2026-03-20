@@ -123,13 +123,18 @@ export const ui = {
       else unknown.push(p);
     }
     known.sort((a, b) => orderIndex.get(a.swimlaneKey) - orderIndex.get(b.swimlaneKey));
-    unknown.sort((a, b) => (b.mostRecent > a.mostRecent ? 1 : b.mostRecent < a.mostRecent ? -1 : 0));
+    // unknown items preserve server-returned order (time bucket + alphabetical)
 
     const sorted = [...unknown, ...known];
     const newOrder = sorted.map(p => p.swimlaneKey);
     // Defer the write to avoid mutating state during $effect
     queueMicrotask(() => { projectOrder = newOrder; });
     return sorted;
+  },
+
+  resetOrder() {
+    projectOrder = [];
+    localStorage.removeItem(STORAGE_ORDER);
   },
 
   reorder(fromDir, toDir) {

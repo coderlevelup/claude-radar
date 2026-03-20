@@ -741,7 +741,17 @@ app.get('/api/sessions', (req, res) => {
       projectPath = resolveProjectPath(dirent.name);
     }
 
-    const { repoUrl, branch } = getRepoInfo(projectPath);
+    let { repoUrl, branch } = getRepoInfo(projectPath);
+    // If no git in this dir, check parent wip/worktrees.json (for topic-level worktree dirs)
+    if (!branch) {
+      try {
+        const wipJson = path.join(projectPath, '..', 'worktrees.json');
+        const wipData = JSON.parse(fs.readFileSync(wipJson, 'utf-8'));
+        const topicId = path.basename(projectPath);
+        const entry = wipData.worktrees?.find(w => w.id === topicId);
+        if (entry?.branch) branch = entry.branch;
+      } catch {}
+    }
     const radarConfig = readRadarConfig(projectPath);
     const folderName = path.basename(projectPath);
     const repoBasename = repoUrl ? repoUrl.split('/').pop() : '';
@@ -749,6 +759,16 @@ app.get('/api/sessions', (req, res) => {
     const swimlaneKey = repoUrl ? `${repoUrl}#${branch}` : dirent.name;
     const swimlaneUrl = radarConfig?.swimlane?.url
       || (repoUrl && branch ? `${repoUrl}/tree/${branch}` : repoUrl || '');
+
+    let swimlaneTitle;
+    if (radarConfig?.swimlane?.title) {
+      swimlaneTitle = radarConfig.swimlane.title.replace(/\{branch\}/g, branch || '').replace(/\/(\s|$)/g, '$1').trim();
+    } else if (swimlaneUrl) {
+      const label = projectName + (branch ? '/' + branch : '');
+      swimlaneTitle = '[' + label + '](' + swimlaneUrl + ')';
+    } else {
+      swimlaneTitle = projectPath;
+    }
 
     projects.push({
       dirName: dirent.name,
@@ -758,6 +778,7 @@ app.get('/api/sessions', (req, res) => {
       repoUrl,
       branch,
       swimlaneUrl,
+      swimlaneTitle,
       mostRecent: new Date(mostRecent).toISOString(),
       sessions,
     });
@@ -775,7 +796,29 @@ app.get('/api/sessions', (req, res) => {
     }
   }
   const mergedProjects = [...mergedMap.values()];
-  mergedProjects.sort((a, b) => new Date(b.mostRecent) - new Date(a.mostRecent));
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+
+  function swimlaneBucket(p) {
+    const t = new Date(p.mostRecent);
+    if (t >= startOfToday) return 0;
+    if (t >= startOfWeek) return 1;
+    // Older: bucket by weeks ago (2 = most recent older week, higher = further back)
+    const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+    return 2 + Math.floor((startOfWeek - t) / msPerWeek);
+  }
+
+  mergedProjects.sort((a, b) => {
+    const bucketDiff = swimlaneBucket(a) - swimlaneBucket(b);
+    if (bucketDiff !== 0) return bucketDiff;
+    const aPath = a.swimlaneTitle.startsWith('/');
+    const bPath = b.swimlaneTitle.startsWith('/');
+    if (aPath !== bPath) return aPath ? 1 : -1;
+    return a.projectName.localeCompare(b.projectName);
+  });
 
   const totalProjects = mergedProjects.length;
   const totalSessions = mergedProjects.reduce((sum, p) => sum + p.sessions.length, 0);

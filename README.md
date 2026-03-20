@@ -7,9 +7,11 @@ A local dashboard for monitoring your Claude Code sessions in real time.
 - **Board view** — sessions grouped by project (swimlanes) and time (Today / This Week / Older)
 - **Timeline view** — horizontal bars on a time axis showing session activity over time
 - **Picture-in-Picture** — compact floating window for monitoring active sessions (Chrome 116+)
-- **Terminal focus** — click to jump to the terminal running a session
 - **Session panel** — full parsed conversation viewer with inline expand and thread preview
-- **Live status** — green (working), yellow (waiting for input), grey (idle) via Claude Code hooks
+- **Live status** — working (green), waiting for input (yellow), idle (grey) via Claude Code hooks
+- **Swimlane titles** — project headers render as markdown links; multi-service systems show links to each repo
+- **Sort order** — swimlanes sorted by recency then alphabetically; reset button restores default order
+- **Drag to reorder** — drag swimlanes to a custom order, persisted across sessions
 
 ## Prerequisites
 
@@ -36,11 +38,13 @@ Open http://localhost:6767 in your browser.
 
 ## Usage
 
-**Board** — the default view. Projects appear as horizontal swimlanes. Sessions are cards sorted into time columns. Each card shows a status dot (green = working, yellow = waiting, grey = idle). Click a card to expand its thread inline, or open the full session panel.
+**Board** — the default view. Projects appear as horizontal swimlanes sorted by most recent activity. Sessions are cards in time columns (Today / This Week / Older). Each card shows a status dot. Click to expand the thread inline, or open the full session panel.
 
 **Timeline** — toggle with the "Timeline" button. Shows sessions as horizontal bars on a weekly time axis, grouped by project.
 
-**PiP** — click the PiP button in the header to open a floating mini-window with active sessions. Works while you're in other apps.
+**PiP** — click the PiP button in the header to open a floating mini-window showing active sessions. Works while you're in other apps. Chrome 116+ only.
+
+**Reset sort** — click the ≡ button to clear any drag-reordering and restore the default sort (recency → named before path-only → alphabetical).
 
 **Session panel** — click any session card to open a side panel with the full parsed conversation.
 
@@ -56,6 +60,35 @@ Session status is determined by two mechanisms:
 See [CLAUDE.md](CLAUDE.md) for detailed architecture and file structure.
 
 ## Configuration
+
+### Swimlane titles (`radar.json`)
+
+Add a `.claude/radar.json` file to a project directory to control how it appears in the dashboard:
+
+```json
+{
+  "swimlane": {
+    "name": "my-project",
+    "title": "my-project/{branch} [GitHub](https://github.com/org/my-project/tree/main)"
+  }
+}
+```
+
+- `name` — display name (defaults to git repo basename or folder name)
+- `title` — markdown string for the swimlane header. `{branch}` is replaced with the current git branch. Supports `[text](url)` inline links.
+
+For multi-service systems, link to multiple repos from a single title:
+
+```json
+{
+  "swimlane": {
+    "name": "my-system",
+    "title": "my-system/{branch} [api](https://github.com/org/my-system_api/tree/develop) · [web](https://github.com/org/my-system_web/tree/develop)"
+  }
+}
+```
+
+Place the same file in every service directory and worktree within the system.
 
 ### Port
 

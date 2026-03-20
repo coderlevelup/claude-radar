@@ -49,6 +49,14 @@
     e.dataTransfer.effectAllowed = 'move';
     ondragstart?.(project.swimlaneKey);
   }
+
+  function renderInlineLinks(md) {
+    if (!md) return '';
+    return md
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" target="_blank" onclick="event.stopPropagation()">$1</a>');
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -81,14 +89,7 @@
     <div class="swimlane-title">
       <span class="swimlane-drag">&equiv;</span>
       <span class="swimlane-chevron">&#9660;</span>
-      {#if project.swimlaneUrl}
-        <a class="swimlane-name swimlane-link" href={project.swimlaneUrl}
-           target="_blank" onclick={(e) => e.stopPropagation()}>
-          {project.projectName}{project.branch ? `/${project.branch}` : ''}
-        </a>
-      {:else}
-        <span class="swimlane-name">{project.projectPath}</span>
-      {/if}
+      <span class="swimlane-name">{@html renderInlineLinks(project.swimlaneTitle)}</span>
     </div>
     <span class="swimlane-count">{project.sessions.length} sessions</span>
   </div>

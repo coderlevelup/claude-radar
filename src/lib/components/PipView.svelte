@@ -23,13 +23,21 @@
         // Sort: working first, then waiting, then idle
         const order = { working: 0, waiting: 1, idle: 2 };
         visible.sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2));
-        result.push({ swimlaneKey: p.swimlaneKey, dirName: p.dirName, name: p.projectName, projectPath: p.projectPath, sessions: visible });
+        result.push({ swimlaneKey: p.swimlaneKey, dirName: p.dirName, name: p.projectName, projectPath: p.projectPath, swimlaneTitle: p.swimlaneTitle, sessions: visible });
       }
     }
     return result;
   });
 
   let empty = $derived(groups.length === 0);
+
+  function renderInlineLinks(md) {
+    if (!md) return '';
+    return md
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" target="_blank" onclick="event.stopPropagation()">$1</a>');
+  }
 
   function dismiss(e, sessionId, modified) {
     e.stopPropagation();
@@ -47,7 +55,7 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="pip-group-label" onclick={() => ui.togglePipCollapsed(group.swimlaneKey)}>
           <span class="pip-chevron" class:collapsed={ui.isPipCollapsed(group.swimlaneKey)}>&#9660;</span>
-          <span>{group.name}</span>
+          <span class="pip-group-title">{@html renderInlineLinks(group.swimlaneTitle || group.name)}</span>
           <span class="pip-group-count">{group.sessions.length}</span>
         </div>
         {#if !ui.isPipCollapsed(group.swimlaneKey)}

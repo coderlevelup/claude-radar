@@ -96,6 +96,19 @@
         <input type="checkbox" bind:checked={ui.showOlder}> Show older
       </label>
     {/if}
+    {#if ui.currentView === 'board'}
+      <button
+        class="pip-btn"
+        onclick={() => ui.resetOrder()}
+        title="Reset swimlane order to default"
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <rect x="2" y="3" width="12" height="1.5" rx="0.75"/>
+          <rect x="2" y="7.25" width="8" height="1.5" rx="0.75"/>
+          <rect x="2" y="11.5" width="5" height="1.5" rx="0.75"/>
+        </svg>
+      </button>
+    {/if}
     {#if pipSupported}
       <button
         class="pip-btn"

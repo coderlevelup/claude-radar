@@ -2,14 +2,14 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0e0e10;
-  --surface: #18181b;
-  --surface-hover: #1e1e22;
-  --border: #2a2a2e;
-  --border-subtle: #222226;
-  --text: #e4e4e7;
-  --text-muted: #71717a;
-  --text-dim: #52525b;
+  --bg: #0b0f0c;
+  --surface: #141a16;
+  --surface-hover: #1a2119;
+  --border: #253028;
+  --border-subtle: #1d2820;
+  --text: #dce8e0;
+  --text-muted: #6a7d6e;
+  --text-dim: #4a5c4e;
   --accent: #4ade80;
   --accent-dim: rgba(74, 222, 128, 0.12);
   --blue: #60a5fa;
@@ -18,8 +18,8 @@
   --green-dim: rgba(74, 222, 128, 0.12);
   --orange: #fb923c;
   --orange-dim: rgba(251, 146, 60, 0.12);
-  --card-bg: #1c1c20;
-  --card-border: #28282c;
+  --card-bg: #171e19;
+  --card-border: #222e25;
   --radius: 8px;
   --radius-sm: 5px;
 }
@@ -255,24 +255,14 @@ main {
   color: var(--text);
 }
 
-.swimlane-link {
-  color: inherit;
+.swimlane-name a {
+  color: var(--accent);
   text-decoration: none;
+  margin-left: 4px;
 }
 
-.swimlane-link:hover {
+.swimlane-name a:hover {
   text-decoration: underline;
-}
-
-.swimlane-branch {
-  font-size: 10px;
-  color: var(--text);
-  background: var(--surface-hover);
-  border: 1px solid var(--border);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-weight: 600;
 }
 
 .swimlane-path {
@@ -515,8 +505,8 @@ main {
 }
 
 .badge-messages {
-  color: var(--blue);
-  background: var(--blue-dim);
+  color: var(--green);
+  background: var(--green-dim);
 }
 
 .badge-branch {
@@ -1152,6 +1142,22 @@ main {
 
 .pip-group-label:hover {
   background: var(--surface-hover);
+}
+
+.pip-group-title {
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.pip-group-title a {
+  color: var(--accent);
+  text-decoration: none;
+  margin-left: 4px;
+}
+
+.pip-group-title a:hover {
+  text-decoration: underline;
 }
 
 .pip-chevron {
