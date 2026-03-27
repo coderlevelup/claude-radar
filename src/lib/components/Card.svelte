@@ -54,7 +54,7 @@
   <div class="card-body">
     {#if session.avatarUrl}
       <div class="card-avatar-col">
-        <img src={session.avatarUrl} alt="" class="card-avatar" onerror="this.style.display='none'" />
+        <img src={session.avatarUrl} alt="" class="card-avatar" onerror={(e) => e.currentTarget.style.display='none'} />
       </div>
     {/if}
 

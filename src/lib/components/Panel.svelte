@@ -1,6 +1,7 @@
 <script>
   import { ui } from '../stores/ui.svelte.js';
   import { fetchSession } from '../utils/api.js';
+  import { escAndFormat, toolArg } from '../utils/sanitize.js';
   import { onMount } from 'svelte';
 
   let messages = $state(null);
@@ -40,16 +41,6 @@
     } finally {
       loading = false;
     }
-  }
-
-  function escAndFormat(text) {
-    let s = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    s = s.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre>$2</pre>');
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    return s;
   }
 
   let session = $derived(ui.panelSession);
@@ -107,15 +98,29 @@
           <div class="panel-loading">No messages in this session</div>
         {:else}
           {#each messages as msg}
-            <div class="msg msg-{msg.role}">
-              <span class="msg-role">{msg.role === 'assistant' ? 'Claude' : (session?.username || 'User')}</span>
+            {@const hasText = msg.parts.some(p => p.type === 'text')}
+            {@const onlyResults = msg.role === 'user' && !hasText}
+            <div class="msg" class:msg-user={msg.role === 'user' && hasText} class:msg-assistant={msg.role === 'assistant'} class:msg-results={onlyResults}>
+              {#if msg.role === 'user' && hasText}
+                <div class="msg-prompt-line">
+                  <span class="msg-prompt-symbol">&gt;</span>
+                  <span class="msg-prompt-user">{session?.username || 'User'}</span>
+                </div>
+              {/if}
               {#each msg.parts as part}
                 {#if part.type === 'text'}
                   <div class="msg-text">{@html escAndFormat(part.text)}</div>
                 {:else if part.type === 'tool_use'}
-                  <span class="msg-tool">{part.name}</span>
+                  {@const arg = toolArg(part.name, part.input)}
+                  <div class="msg-tool">
+                    <span class="msg-tool-dot">⏺</span>
+                    <span class="msg-tool-name">{part.name}{#if arg}<span class="msg-tool-arg">({arg})</span>{/if}</span>
+                  </div>
                 {:else if part.type === 'tool_result'}
-                  <div class="msg-tool-result">{part.text}</div>
+                  <div class="msg-tool-result">
+                    <span class="msg-tool-elbow">└</span>
+                    <span class="msg-tool-output">{part.text}</span>
+                  </div>
                 {/if}
               {/each}
             </div>
@@ -132,11 +137,12 @@
     text-align: center;
     color: var(--accent);
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 8px 16px;
+    border: none;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 12px 20px;
     cursor: pointer;
     font-size: 13px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
     transition: background 0.15s;
   }
   .panel-view-link:hover {

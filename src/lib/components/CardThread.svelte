@@ -1,6 +1,7 @@
 <script>
   import { fetchRecent } from '../utils/api.js';
   import { ui } from '../stores/ui.svelte.js';
+  import { escAndFormat } from '../utils/sanitize.js';
 
   let { dirName, sessionId, status, session } = $props();
 
@@ -49,15 +50,7 @@
     }
   });
 
-  function escAndFormat(text) {
-    let s = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    s = s.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre>$2</pre>');
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    return s;
-  }
+
 </script>
 
 {#if loading}

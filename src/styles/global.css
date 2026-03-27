@@ -277,6 +277,108 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.swimlane-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.swimlane-gear {
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+  transition: color 0.15s, background 0.15s;
+  position: relative;
+}
+
+.swimlane-gear:hover,
+.swimlane-gear.active {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.swimlane-valkey-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.swimlane-valkey-dot.connected { background: var(--green); }
+.swimlane-valkey-dot.disconnected { background: var(--text-dim); }
+
+/* ── Swimlane config panel ───────────────────────────── */
+.swimlane-config {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.swimlane-config-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.swimlane-config-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 64px;
+  flex-shrink: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.swimlane-config-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.swimlane-config-input:focus { border-color: var(--accent); }
+
+.swimlane-config-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 2px;
+}
+
+.swimlane-config-save {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.swimlane-config-save:hover { background: rgba(74, 222, 128, 0.2); }
+.swimlane-config-save:disabled { opacity: 0.5; cursor: default; }
+
+.swimlane-config-ok { font-size: 11px; color: var(--green); }
+.swimlane-config-error { font-size: 11px; color: var(--orange); }
+.swimlane-config-status { font-size: 11px; color: var(--text-dim); }
+.swimlane-config-status.connected { color: var(--green); }
+
 .swimlane-body {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -686,7 +788,7 @@ main {
   right: 0;
   width: min(720px, 85vw);
   height: 100vh;
-  background: var(--bg);
+  background: #000;
   border-left: 1px solid var(--border);
   z-index: 210;
   display: flex;
@@ -757,10 +859,11 @@ main {
 .panel-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 13px;
 }
 
 .panel-loading {
@@ -768,88 +871,121 @@ main {
   font-size: 13px;
   text-align: center;
   padding: 32px 0;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
 .msg {
-  padding: 12px 14px;
-  border-radius: var(--radius);
-  font-size: 13px;
+  padding: 10px 20px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .msg-user {
-  background: var(--accent-dim);
-  border: 1px solid rgba(192, 132, 252, 0.2);
-  color: var(--text);
+  background: rgba(251, 146, 60, 0.06);
 }
 
 .msg-assistant {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: transparent;
 }
 
-.msg-role {
-  font-size: 10px;
+/* Tool-result-only user turns — no prompt header, no tint, attach visually to tool call */
+.msg-results {
+  background: transparent;
+  padding-top: 0;
+  border-bottom: none;
+  margin-top: -1px;
+}
+
+.msg-prompt-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-  display: block;
 }
 
-.msg-user .msg-role { color: var(--accent); }
-.msg-assistant .msg-role { color: var(--blue); }
+.msg-prompt-symbol {
+  color: var(--orange);
+}
+
+.msg-prompt-user {
+  color: var(--orange);
+  opacity: 0.65;
+}
 
 .msg-tool {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: 6px;
+  padding: 1px 0;
+  color: var(--text-muted);
+}
+
+.msg-tool-dot {
+  color: var(--orange);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.msg-tool-name {
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.msg-tool-arg {
   color: var(--text-dim);
-  background: var(--bg);
-  border: 1px solid var(--border-subtle);
-  padding: 2px 8px;
-  border-radius: 10px;
-  margin: 2px 4px 2px 0;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52ch;
+  display: inline-block;
+  vertical-align: bottom;
 }
 
 .msg-tool-result {
-  font-size: 11px;
+  display: flex;
+  gap: 8px;
+  padding: 1px 0 1px 2px;
   color: var(--text-dim);
-  background: var(--bg);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-  margin: 4px 0;
-  max-height: 120px;
-  overflow-y: auto;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.msg-tool-elbow {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.msg-tool-output {
   white-space: pre-wrap;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .msg-text { white-space: pre-wrap; }
 
 .msg-text code {
-  background: var(--bg);
+  background: var(--surface);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
 .msg-text pre {
-  background: var(--bg);
+  background: var(--surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
   margin: 6px 0;
   overflow-x: auto;
   font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
   white-space: pre;
 }
 

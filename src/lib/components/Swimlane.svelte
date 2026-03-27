@@ -1,5 +1,6 @@
 <script>
   import Column from './Column.svelte';
+  import SwimlaneConfig from './SwimlaneConfig.svelte';
   import { ui } from '../stores/ui.svelte.js';
   import { timeColumn, groupOlderByWeek } from '../utils/time.js';
 
@@ -40,9 +41,16 @@
     return cols;
   });
 
+  let configOpen = $state(false);
+
   function handleHeaderClick(e) {
-    if (e.target.closest('.swimlane-drag')) return;
+    if (e.target.closest('.swimlane-drag') || e.target.closest('.swimlane-gear')) return;
     ui.toggleCollapsed(project.swimlaneKey);
+  }
+
+  function toggleConfig(e) {
+    e.stopPropagation();
+    configOpen = !configOpen;
   }
 
   function handleDragStart(e) {
@@ -91,8 +99,29 @@
       <span class="swimlane-chevron">&#9660;</span>
       <span class="swimlane-name">{@html renderInlineLinks(project.swimlaneTitle)}</span>
     </div>
-    <span class="swimlane-count">{project.sessions.length} sessions</span>
+    <div class="swimlane-header-right">
+      <span class="swimlane-count">{project.sessions.length} sessions</span>
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span
+        class="swimlane-gear"
+        class:active={configOpen}
+        onclick={toggleConfig}
+        title="Configure swimlane"
+      >
+        {#if project.valkeyConnected}
+          <span class="swimlane-valkey-dot connected"></span>
+        {:else if project.valkeyConfigured}
+          <span class="swimlane-valkey-dot disconnected"></span>
+        {/if}
+        ⚙
+      </span>
+    </div>
   </div>
+
+  {#if configOpen}
+    <SwimlaneConfig {project} onclose={() => configOpen = false} />
+  {/if}
 
   {#if !isCollapsed}
     <div class="swimlane-body" style="grid-template-columns: repeat({columns.length}, 1fr)">

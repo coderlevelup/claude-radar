@@ -1,3 +1,34 @@
+// Escape HTML and render a safe subset of markdown for message text.
+export function escAndFormat(text) {
+  let s = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  // Code blocks before inline code so backticks inside fences don't double-process
+  s = s.replace(/```(?:\w*)\n([\s\S]*?)```/g, '<pre>$1</pre>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold before italic so ** isn't misread as two *
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  return s;
+}
+
+// Extract the primary display arg from a tool_use input object.
+// Matches Claude Code's convention: Bash shows command, file tools show path.
+export function toolArg(name, input) {
+  if (!input || typeof input !== 'object') return '';
+  const n = (name || '').toLowerCase();
+  if (n === 'bash') return input.command || '';
+  if (['edit', 'write', 'read', 'multiedit', 'notebookedit'].includes(n)) return input.file_path || '';
+  if (n === 'glob') return input.pattern || '';
+  if (n === 'grep') return input.pattern || '';
+  if (n === 'websearch') return input.query || '';
+  if (n === 'webfetch') return input.url || '';
+  // Generic fallback: first string value
+  const first = Object.values(input).find(v => typeof v === 'string');
+  return first || '';
+}
+
 // Mask sequences of 13-19 digits that could be payment card numbers (PANs).
 // Matches with or without separators (spaces, hyphens, dots).
 // Preserves first 6 and last 4 digits (BIN + last4 is standard PCI masking).
