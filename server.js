@@ -131,40 +131,157 @@ function findSessionFile(sessionId) {
   return null;
 }
 
-// Read recent conversation from session tail for summarization
-function readRecentConversation(filePath) {
-  try {
-    const fd = fs.openSync(filePath, 'r');
-    const stat = fs.fstatSync(fd);
-    const tailSize = Math.min(16384, stat.size);
-    const buf = Buffer.alloc(tailSize);
-    fs.readSync(fd, buf, 0, tailSize, stat.size - tailSize);
-    fs.closeSync(fd);
+// ── Progressive compaction ─────────────────────────────────────────────────
+// Strategy: divide files into 128KB chunks. The "tail" (last chunk) is always
+// sent raw. Everything before it ("head") is progressively compacted:
+//   compaction[1] = haiku_compact(raw chunk 0)
+//   compaction[2] = haiku_compact(compaction[1] + raw chunk 1)
+//   compaction[N] = haiku_compact(compaction[N-1] + raw chunk N-1)
+// Compactions are stored in ~/.claude/radar-compact/{dirName}/ and reused across
+// calls, so each 128KB of growth costs at most one extra Haiku compaction call.
 
-    const lines = buf.toString('utf-8').split('\n').filter(l => l.trim());
-    const turns = [];
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type !== 'user' && obj.type !== 'assistant') continue;
-        const content = obj.message && obj.message.content;
-        let text = '';
-        if (typeof content === 'string') {
-          text = content;
-        } else if (Array.isArray(content)) {
-          text = content
-            .filter(c => c && c.type === 'text' && c.text)
-            .map(c => c.text)
-            .join(' ');
-        }
-        if (text.trim()) {
-          turns.push({ role: obj.type, text: text.slice(0, 500) });
-        }
-      } catch {}
+const CHUNK = 131072; // 128KB
+const COMPACT_BASE = path.join(os.homedir(), '.claude', 'radar-compact');
+
+// Extract user/assistant text turns from a raw .jsonl text blob
+function extractTurns(text) {
+  const seen = new Set();
+  const turns = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+      const id = obj.message?.id || obj.uuid;
+      if (id) { if (seen.has(id)) continue; seen.add(id); }
+      const content = obj.message?.content;
+      let t = '';
+      if (typeof content === 'string') t = content;
+      else if (Array.isArray(content)) {
+        t = content.filter(c => c?.type === 'text' && c.text).map(c => c.text).join(' ');
+      }
+      if (t.trim()) turns.push({ role: obj.type, text: t.slice(0, 1000) });
+    } catch {}
+  }
+  return turns;
+}
+
+function compactFilePath(dirName, sessionId, chunkIndex) {
+  return path.join(COMPACT_BASE, dirName, `${sessionId}-${chunkIndex}.json`);
+}
+
+function readCompaction(dirName, sessionId, chunkIndex) {
+  try {
+    return JSON.parse(fs.readFileSync(compactFilePath(dirName, sessionId, chunkIndex), 'utf-8'));
+  } catch { return null; }
+}
+
+function writeCompaction(dirName, sessionId, chunkIndex, summary) {
+  const dir = path.join(COMPACT_BASE, dirName);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(compactFilePath(dirName, sessionId, chunkIndex), JSON.stringify({ chunkIndex, summary, generatedAt: Date.now() }), 'utf-8');
+}
+
+// Read a slice of the session file and return it as formatted turn text
+function readChunkAsText(fd, from, to) {
+  const size = to - from;
+  const buf = Buffer.alloc(size);
+  fs.readSync(fd, buf, 0, size, from);
+  const turns = extractTurns(buf.toString('utf-8'));
+  return turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
+}
+
+// Compact a text blob into a dense summary via Haiku
+async function compactWithHaiku(inputText) {
+  const resp = await bedrock.messages.create({
+    model: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+    max_tokens: 800,
+    messages: [{
+      role: 'user',
+      content: `Summarize this coding session transcript into a dense summary (300-500 words) preserving: the main goal, key decisions, technologies and files involved, and current state of progress. This summary will be combined with newer messages for final summarization.\n\n${inputText.slice(0, 60000)}`,
+    }],
+  });
+  return (resp.content[0]?.text || '').trim();
+}
+
+// Build (or retrieve) the compaction for chunk index N using the chain:
+//   compaction[N] = compact(compaction[N-1] + raw_chunk[N-1])
+// Stores each level to disk so future calls skip already-done levels.
+async function buildCompaction(dirName, sessionId, fd, targetIndex) {
+  // Find the highest already-built level below targetIndex
+  let baseIndex = 0;
+  let baseSummary = '';
+  for (let i = targetIndex - 1; i >= 1; i--) {
+    const stored = readCompaction(dirName, sessionId, i);
+    if (stored) { baseIndex = i; baseSummary = stored.summary; break; }
+  }
+
+  // Build each missing level up to targetIndex
+  for (let i = baseIndex + 1; i <= targetIndex; i++) {
+    const chunkFrom = (i - 1) * CHUNK;
+    const chunkTo = i * CHUNK;
+    const rawText = readChunkAsText(fd, chunkFrom, chunkTo);
+    const input = baseSummary
+      ? `Previous summary:\n${baseSummary}\n\nContinued:\n${rawText}`
+      : rawText;
+    baseSummary = await compactWithHaiku(input);
+    writeCompaction(dirName, sessionId, i, baseSummary);
+  }
+
+  return baseSummary;
+}
+
+// Get the full conversation context for title/blurb generation.
+// Small files (≤ 1 chunk): return all turns as text.
+// Large files: return compacted head + raw tail, building compaction if needed.
+async function getConversationForSummarization(sessionId, filePath) {
+  const size = fs.statSync(filePath).size;
+  const dirName = path.basename(path.dirname(filePath));
+  const fd = fs.openSync(filePath, 'r');
+
+  try {
+    if (size <= CHUNK) {
+      // Small session — send everything
+      const buf = Buffer.alloc(size);
+      fs.readSync(fd, buf, 0, size, 0);
+      const turns = extractTurns(buf.toString('utf-8'));
+      return turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
     }
-    return turns.slice(-8); // last ~8 turns
-  } catch {}
-  return [];
+
+    // Tail = last CHUNK bytes (always raw)
+    const tailStart = size - CHUNK;
+    const tailText = readChunkAsText(fd, tailStart, size);
+
+    // Compaction target = last full chunk boundary before tailStart
+    const targetIndex = Math.floor(tailStart / CHUNK);
+    // targetIndex == 0 means tailStart < CHUNK: small bridge, no compaction needed
+    let headText;
+    if (targetIndex === 0) {
+      // Bridge from 0 to tailStart is < CHUNK — read it raw
+      headText = readChunkAsText(fd, 0, tailStart);
+    } else {
+      // Check if exact compaction exists; build if not
+      const stored = readCompaction(dirName, sessionId, targetIndex);
+      const summary = stored
+        ? stored.summary
+        : await buildCompaction(dirName, sessionId, fd, targetIndex);
+
+      // If tailStart is not chunk-aligned, append the bridge between the last chunk
+      // boundary and tailStart as raw text
+      const lastBoundary = targetIndex * CHUNK;
+      const bridgeText = lastBoundary < tailStart
+        ? readChunkAsText(fd, lastBoundary, tailStart)
+        : '';
+
+      headText = bridgeText
+        ? `${summary}\n\n[Continuing]:\n${bridgeText}`
+        : summary;
+    }
+
+    return `[Session history]:\n${headText}\n\n[Recent messages]:\n${tailText}`;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // Detect Haiku refusal/meta-responses (e.g. "I don't have a coding session...")
@@ -184,13 +301,11 @@ async function generateBlurb(sessionId) {
   let fileSize = 0;
   try { fileSize = fs.statSync(filePath).size; } catch { return; }
 
-  const turns = readRecentConversation(filePath);
-  if (turns.length === 0) {
+  const convo = await getConversationForSummarization(sessionId, filePath).catch(() => '');
+  if (!convo) {
     blurbCache.set(sessionId, '', fileSize);
     return;
   }
-
-  const convo = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
 
   try {
     const resp = await bedrock.messages.create({
@@ -224,13 +339,11 @@ async function generateTitle(sessionId) {
   let fileSize = 0;
   try { fileSize = fs.statSync(filePath).size; } catch { return; }
 
-  const turns = readRecentConversation(filePath);
-  if (turns.length === 0) {
+  const convo = await getConversationForSummarization(sessionId, filePath).catch(() => '');
+  if (!convo) {
     titleCache.set(sessionId, '', fileSize);
     return;
   }
-
-  const convo = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
 
   try {
     const resp = await bedrock.messages.create({
