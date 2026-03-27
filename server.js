@@ -132,13 +132,14 @@ function findSessionFile(sessionId) {
 }
 
 // ── Progressive compaction ─────────────────────────────────────────────────
-// Strategy: divide files into 128KB chunks. The "tail" (last chunk) is always
-// sent raw. Everything before it ("head") is progressively compacted:
-//   compaction[1] = haiku_compact(raw chunk 0)
-//   compaction[2] = haiku_compact(compaction[1] + raw chunk 1)
-//   compaction[N] = haiku_compact(compaction[N-1] + raw chunk N-1)
-// Compactions are stored in ~/.claude/radar-compact/{dirName}/ and reused across
-// calls, so each 128KB of growth costs at most one extra Haiku compaction call.
+// One compaction file per session: ~/.claude/radar-compact/{dirName}/{sessionId}.json
+// { summary, coveredUpToBytes, generatedAt }
+//
+// The summary covers bytes 0..coveredUpToBytes. When the session grows, we extend
+// the summary by incorporating new content in CHUNK-sized increments:
+//   new_summary = compact(old_summary + raw_new_content)
+// This ensures each title/blurb generation call costs at most one extra compact call
+// once the session is larger than one chunk.
 
 const CHUNK = 131072; // 128KB
 const COMPACT_BASE = path.join(os.homedir(), '.claude', 'radar-compact');
@@ -166,27 +167,26 @@ function extractTurns(text) {
   return turns;
 }
 
-function compactFilePath(dirName, sessionId, chunkIndex) {
-  return path.join(COMPACT_BASE, dirName, `${sessionId}-${chunkIndex}.json`);
+function compactFilePath(dirName, sessionId) {
+  return path.join(COMPACT_BASE, dirName, `${sessionId}.json`);
 }
 
-function readCompaction(dirName, sessionId, chunkIndex) {
+function readCompaction(dirName, sessionId) {
   try {
-    return JSON.parse(fs.readFileSync(compactFilePath(dirName, sessionId, chunkIndex), 'utf-8'));
+    return JSON.parse(fs.readFileSync(compactFilePath(dirName, sessionId), 'utf-8'));
   } catch { return null; }
 }
 
-function writeCompaction(dirName, sessionId, chunkIndex, summary) {
+function writeCompaction(dirName, sessionId, summary, coveredUpToBytes) {
   const dir = path.join(COMPACT_BASE, dirName);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(compactFilePath(dirName, sessionId, chunkIndex), JSON.stringify({ chunkIndex, summary, generatedAt: Date.now() }), 'utf-8');
+  fs.writeFileSync(compactFilePath(dirName, sessionId), JSON.stringify({ summary, coveredUpToBytes, generatedAt: Date.now() }), 'utf-8');
 }
 
-// Read a slice of the session file and return it as formatted turn text
+// Read bytes [from, to) from an open fd and return as formatted turn text
 function readChunkAsText(fd, from, to) {
-  const size = to - from;
-  const buf = Buffer.alloc(size);
-  fs.readSync(fd, buf, 0, size, from);
+  const buf = Buffer.alloc(to - from);
+  fs.readSync(fd, buf, 0, to - from, from);
   const turns = extractTurns(buf.toString('utf-8'));
   return turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
 }
@@ -198,87 +198,79 @@ async function compactWithHaiku(inputText) {
     max_tokens: 800,
     messages: [{
       role: 'user',
-      content: `Summarize this coding session transcript into a dense summary (300-500 words) preserving: the main goal, key decisions, technologies and files involved, and current state of progress. This summary will be combined with newer messages for final summarization.\n\n${inputText.slice(0, 60000)}`,
+      content: `Summarize this coding session transcript into a dense summary (300-500 words) preserving: the main goal, key decisions, technologies and files involved, and current state of progress. This summary will be used alongside newer messages for final summarization.\n\n${inputText.slice(0, 60000)}`,
     }],
   });
   return (resp.content[0]?.text || '').trim();
 }
 
-// Build (or retrieve) the compaction for chunk index N using the chain:
-//   compaction[N] = compact(compaction[N-1] + raw_chunk[N-1])
-// Stores each level to disk so future calls skip already-done levels.
-async function buildCompaction(dirName, sessionId, fd, targetIndex) {
-  // Find the highest already-built level below targetIndex
-  let baseIndex = 0;
-  let baseSummary = '';
-  for (let i = targetIndex - 1; i >= 1; i--) {
-    const stored = readCompaction(dirName, sessionId, i);
-    if (stored) { baseIndex = i; baseSummary = stored.summary; break; }
-  }
-
-  // Build each missing level up to targetIndex
-  for (let i = baseIndex + 1; i <= targetIndex; i++) {
-    const chunkFrom = (i - 1) * CHUNK;
-    const chunkTo = i * CHUNK;
-    const rawText = readChunkAsText(fd, chunkFrom, chunkTo);
-    const input = baseSummary
-      ? `Previous summary:\n${baseSummary}\n\nContinued:\n${rawText}`
-      : rawText;
-    baseSummary = await compactWithHaiku(input);
-    writeCompaction(dirName, sessionId, i, baseSummary);
-  }
-
-  return baseSummary;
-}
-
-// Get the full conversation context for title/blurb generation.
-// Small files (≤ 1 chunk): return all turns as text.
-// Large files: return compacted head + raw tail, building compaction if needed.
-async function getConversationForSummarization(sessionId, filePath) {
+// Return the best available conversation context for title/blurb generation.
+// SYNCHRONOUS — never calls Haiku. Uses stored compaction if available, else raw head+tail.
+// Compaction building is handled separately by buildSessionCompaction().
+function getConversationContext(sessionId, filePath) {
   const size = fs.statSync(filePath).size;
   const dirName = path.basename(path.dirname(filePath));
   const fd = fs.openSync(filePath, 'r');
 
   try {
     if (size <= CHUNK) {
-      // Small session — send everything
       const buf = Buffer.alloc(size);
       fs.readSync(fd, buf, 0, size, 0);
       const turns = extractTurns(buf.toString('utf-8'));
       return turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
     }
 
-    // Tail = last CHUNK bytes (always raw)
     const tailStart = size - CHUNK;
     const tailText = readChunkAsText(fd, tailStart, size);
+    const existing = readCompaction(dirName, sessionId);
 
-    // Compaction target = last full chunk boundary before tailStart
-    const targetIndex = Math.floor(tailStart / CHUNK);
-    // targetIndex == 0 means tailStart < CHUNK: small bridge, no compaction needed
     let headText;
-    if (targetIndex === 0) {
-      // Bridge from 0 to tailStart is < CHUNK — read it raw
-      headText = readChunkAsText(fd, 0, tailStart);
+    if (existing && existing.coveredUpToBytes >= tailStart) {
+      // Compaction covers the entire head — best case
+      headText = existing.summary;
+    } else if (existing) {
+      // Compaction is stale: use it + raw bridge to tailStart
+      const bridgeText = readChunkAsText(fd, existing.coveredUpToBytes, tailStart);
+      headText = bridgeText ? `${existing.summary}\n\n${bridgeText}` : existing.summary;
     } else {
-      // Check if exact compaction exists; build if not
-      const stored = readCompaction(dirName, sessionId, targetIndex);
-      const summary = stored
-        ? stored.summary
-        : await buildCompaction(dirName, sessionId, fd, targetIndex);
-
-      // If tailStart is not chunk-aligned, append the bridge between the last chunk
-      // boundary and tailStart as raw text
-      const lastBoundary = targetIndex * CHUNK;
-      const bridgeText = lastBoundary < tailStart
-        ? readChunkAsText(fd, lastBoundary, tailStart)
-        : '';
-
-      headText = bridgeText
-        ? `${summary}\n\n[Continuing]:\n${bridgeText}`
-        : summary;
+      // No compaction yet: fall back to raw first CHUNK of head
+      const headEnd = Math.min(tailStart, CHUNK);
+      headText = readChunkAsText(fd, 0, headEnd);
     }
 
-    return `[Session history]:\n${headText}\n\n[Recent messages]:\n${tailText}`;
+    return `${headText}\n\n${tailText}`;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Build or extend the stored compaction for a session.
+// Called from the background compaction pass, not from title/blurb generation.
+async function buildSessionCompaction(sessionId, filePath) {
+  const size = fs.statSync(filePath).size;
+  if (size <= CHUNK) return; // No compaction needed for small sessions
+
+  const dirName = path.basename(path.dirname(filePath));
+  const tailStart = size - CHUNK;
+
+  const existing = readCompaction(dirName, sessionId);
+  if (existing && existing.coveredUpToBytes >= tailStart) return; // Already current
+
+  let summary = existing?.summary || '';
+  let coveredUpTo = existing?.coveredUpToBytes || 0;
+
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    while (coveredUpTo < tailStart) {
+      const nextBoundary = Math.min(coveredUpTo + CHUNK, tailStart);
+      const rawText = readChunkAsText(fd, coveredUpTo, nextBoundary);
+      const input = summary
+        ? `Previous summary:\n${summary}\n\nContinued:\n${rawText}`
+        : rawText;
+      summary = await compactWithHaiku(input);
+      coveredUpTo = nextBoundary;
+      writeCompaction(dirName, sessionId, summary, coveredUpTo);
+    }
   } finally {
     fs.closeSync(fd);
   }
@@ -301,7 +293,8 @@ async function generateBlurb(sessionId) {
   let fileSize = 0;
   try { fileSize = fs.statSync(filePath).size; } catch { return; }
 
-  const convo = await getConversationForSummarization(sessionId, filePath).catch(() => '');
+  let convo = '';
+  try { convo = getConversationContext(sessionId, filePath); } catch {}
   if (!convo) {
     blurbCache.set(sessionId, '', fileSize);
     return;
@@ -339,7 +332,8 @@ async function generateTitle(sessionId) {
   let fileSize = 0;
   try { fileSize = fs.statSync(filePath).size; } catch { return; }
 
-  const convo = await getConversationForSummarization(sessionId, filePath).catch(() => '');
+  let convo = '';
+  try { convo = getConversationContext(sessionId, filePath); } catch {}
   if (!convo) {
     titleCache.set(sessionId, '', fileSize);
     return;
@@ -1295,9 +1289,76 @@ async function refreshCaches() {
     }
     console.log(`Blurb generation complete.`);
   }
+
+  // Background compaction pass: build/extend compactions for large sessions.
+  // Runs after titles and blurbs so it doesn't delay the visible results.
+  const compactQueue = [];
+  for (const dirent of dirEntries) {
+    if (!dirent.isDirectory()) continue;
+    const projectDir = path.join(PROJECTS_DIR, dirent.name);
+    let files;
+    try { files = fs.readdirSync(projectDir).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+    for (const file of files) {
+      const sessionId = path.basename(file, '.jsonl');
+      const filePath = path.join(projectDir, file);
+      try {
+        const size = fs.statSync(filePath).size;
+        if (size <= CHUNK) continue;
+        const dirName = dirent.name;
+        const tailStart = size - CHUNK;
+        const existing = readCompaction(dirName, sessionId);
+        if (!existing || existing.coveredUpToBytes < tailStart) compactQueue.push({ sessionId, filePath });
+      } catch {}
+    }
+  }
+
+  if (compactQueue.length > 0) {
+    console.log(`Building compactions for ${compactQueue.length} sessions...`);
+    for (const { sessionId, filePath } of compactQueue) {
+      try { await buildSessionCompaction(sessionId, filePath); } catch {}
+      await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`Compaction complete.`);
+  }
 }
 
 // At startup: scan all projects, connect any configured Valkeys, load their caches.
+// Migrate old numbered compaction files ({sessionId}-{N}.json) to the new single-file
+// format ({sessionId}.json). Picks the highest-numbered file per session as the
+// best available summary, writes the new format, then deletes the old files.
+function migrateCompactions() {
+  try {
+    for (const dirEntry of fs.readdirSync(COMPACT_BASE, { withFileTypes: true })) {
+      if (!dirEntry.isDirectory()) continue;
+      const dirPath = path.join(COMPACT_BASE, dirEntry.name);
+      const bySession = new Map(); // sessionId → [{ index, file }]
+      for (const f of fs.readdirSync(dirPath)) {
+        const m = f.match(/^(.+)-(\d+)\.json$/);
+        if (!m) continue;
+        const [, sid, idx] = m;
+        if (!bySession.has(sid)) bySession.set(sid, []);
+        bySession.get(sid).push({ index: parseInt(idx), file: path.join(dirPath, f) });
+      }
+      for (const [sid, entries] of bySession) {
+        entries.sort((a, b) => b.index - a.index); // highest first
+        try {
+          const best = JSON.parse(fs.readFileSync(entries[0].file, 'utf-8'));
+          const newPath = path.join(dirPath, `${sid}.json`);
+          if (!fs.existsSync(newPath)) {
+            fs.writeFileSync(newPath, JSON.stringify({
+              summary: best.summary,
+              coveredUpToBytes: best.chunkIndex * CHUNK,
+              generatedAt: best.generatedAt || Date.now(),
+            }), 'utf-8');
+          }
+        } catch {}
+        // Delete all old numbered files
+        for (const e of entries) { try { fs.unlinkSync(e.file); } catch {} }
+      }
+    }
+  } catch {}
+}
+
 async function initPerProjectValkeys() {
   let dirs;
   try { dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory()); }
@@ -1335,13 +1396,16 @@ async function initPerProjectValkeys() {
       }
       console.log(`Valkey caches loaded from ${cfg.url}`);
     } catch (err) {
-      if (err.message !== 'timeout') console.error(`initPerProjectValkeys(${dirent.name}): ${err.message}`);
+      if (err.message !== 'timeout' && err.code !== 'ENOENT') {
+        console.error(`initPerProjectValkeys(${dirent.name}): ${err.message}`);
+      }
     }
   }
 }
 
 app.listen(PORT, () => {
   console.log(`Claude Radar → http://localhost:${PORT}`);
+  migrateCompactions();
   initPerProjectValkeys()
     .then(() => refreshCaches())
     .catch(err => console.error('startup failed:', err.message));
