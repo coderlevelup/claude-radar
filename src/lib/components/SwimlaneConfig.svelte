@@ -1,89 +1,118 @@
 <script>
   import { saveSwimlaneConfig } from '../utils/api.js';
 
-  let { project, onclose } = $props();
+  let { project } = $props();
 
   let name = $state(project.projectName || '');
-  let valkeyUrl = $state(project.valkeyUrl || '');
-  let valkeyPassword = $state('');
-  let saving = $state(false);
-  let saved = $state(false);
-  let error = $state('');
-  let connected = $state(project.valkeyConnected);
+  let nameError = $state('');
+  let nameSaving = $state(false);
 
-  async function save(e) {
-    e.stopPropagation();
-    saving = true;
-    error = '';
-    try {
-      const payload = { name: name.trim() || undefined, valkeyUrl: valkeyUrl.trim() };
-      if (valkeyPassword) payload.valkeyPassword = valkeyPassword;
-      else if (project.valkeyConfigured && !valkeyPassword) payload.valkeyPassword = undefined; // don't touch
-      const result = await saveSwimlaneConfig(project.swimlaneKey, payload);
-      if (result.error) { error = result.error; }
-      else { saved = true; connected = result.valkeyConnected; setTimeout(() => saved = false, 2000); }
-    } catch (err) {
-      error = err.message;
-    } finally {
-      saving = false;
-    }
-  }
+  // Push targets list — initialised from project.valkeyPush
+  let targets = $state((project.valkeyPush || []).map(t => ({ ...t })));
+
+  // Add-target form
+  let addUrl = $state('');
+  let addSwimlane = $state('');
+  let addPassword = $state('');
+  let addError = $state('');
+  let addSaving = $state(false);
 
   function stopProp(e) { e.stopPropagation(); }
+
+  async function saveName(e) {
+    e.stopPropagation();
+    if (!name.trim()) return;
+    nameSaving = true;
+    nameError = '';
+    try {
+      const r = await saveSwimlaneConfig(project.swimlaneKey, { name: name.trim() });
+      if (r.error) nameError = r.error;
+    } catch (err) { nameError = err.message; }
+    finally { nameSaving = false; }
+  }
+
+  async function addTarget(e) {
+    e.stopPropagation();
+    if (!addUrl.trim()) return;
+    addSaving = true;
+    addError = '';
+    try {
+      const newTargets = [
+        ...targets.map(t => ({ url: t.url, swimlane: t.swimlane })),
+        { url: addUrl.trim(), swimlane: addSwimlane.trim() || 'default', ...(addPassword ? { password: addPassword } : {}) },
+      ];
+      const r = await saveSwimlaneConfig(project.swimlaneKey, { push: newTargets });
+      if (r.error) { addError = r.error; return; }
+      targets = r.valkeyPush || newTargets.map(t => ({ ...t, connected: false }));
+      addUrl = '';
+      addSwimlane = '';
+      addPassword = '';
+    } catch (err) { addError = err.message; }
+    finally { addSaving = false; }
+  }
+
+  async function removeTarget(e, idx) {
+    e.stopPropagation();
+    const newTargets = targets.filter((_, i) => i !== idx).map(t => ({ url: t.url, swimlane: t.swimlane }));
+    try {
+      const r = await saveSwimlaneConfig(project.swimlaneKey, { push: newTargets });
+      if (!r.error) targets = r.valkeyPush || newTargets.map(t => ({ ...t, connected: false }));
+    } catch {}
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="swimlane-config" onclick={stopProp}>
+
+  <!-- Name row -->
   <div class="swimlane-config-row">
     <label class="swimlane-config-label">Name</label>
-    <input
-      class="swimlane-config-input"
-      type="text"
-      bind:value={name}
-      placeholder={project.projectName}
-      onclick={stopProp}
-    />
-  </div>
-
-  <div class="swimlane-config-row">
-    <label class="swimlane-config-label">Valkey URL</label>
-    <input
-      class="swimlane-config-input"
-      type="text"
-      bind:value={valkeyUrl}
-      placeholder="redis://host:6379"
-      onclick={stopProp}
-    />
-  </div>
-
-  {#if valkeyUrl}
-    <div class="swimlane-config-row">
-      <label class="swimlane-config-label">Password</label>
-      <input
-        class="swimlane-config-input"
-        type="password"
-        bind:value={valkeyPassword}
-        placeholder={project.valkeyConfigured ? '(unchanged)' : 'optional'}
-        onclick={stopProp}
-      />
-    </div>
-  {/if}
-
-  <div class="swimlane-config-footer">
-    {#if error}
-      <span class="swimlane-config-error">{error}</span>
-    {:else if saved}
-      <span class="swimlane-config-ok">{connected ? '● connected' : '● saved'}</span>
-    {:else if valkeyUrl && connected}
-      <span class="swimlane-config-status connected">● connected</span>
-    {:else if valkeyUrl}
-      <span class="swimlane-config-status">○ not connected</span>
-    {:else}
-      <span></span>
-    {/if}
-    <button class="swimlane-config-save" onclick={save} disabled={saving}>
-      {saving ? 'Saving…' : 'Save'}
+    <input class="swimlane-config-input" type="text" bind:value={name}
+      placeholder={project.projectName} onclick={stopProp} />
+    <button class="swimlane-config-btn" onclick={saveName} disabled={nameSaving}>
+      {nameSaving ? '…' : 'Save'}
     </button>
   </div>
+  {#if nameError}<div class="swimlane-config-msg error">{nameError}</div>{/if}
+
+  <!-- Existing push targets -->
+  {#if targets.length > 0}
+    <div class="swimlane-config-section">Push targets</div>
+    {#each targets as t, i}
+      <div class="swimlane-config-target">
+        <span class="swimlane-valkey-dot {t.connected ? 'connected' : 'disconnected'}"></span>
+        <span class="swimlane-config-target-url">{t.url}</span>
+        <span class="swimlane-config-target-lane">{t.swimlane}</span>
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <span class="swimlane-config-remove" onclick={(e) => removeTarget(e, i)} title="Remove">✕</span>
+      </div>
+    {/each}
+  {/if}
+
+  <!-- Add target form -->
+  <div class="swimlane-config-section">{targets.length > 0 ? 'Add target' : 'Push targets'}</div>
+  <div class="swimlane-config-row">
+    <label class="swimlane-config-label">URL</label>
+    <input class="swimlane-config-input" type="text" bind:value={addUrl}
+      placeholder="redis://host:6379" onclick={stopProp} />
+  </div>
+  <div class="swimlane-config-row">
+    <label class="swimlane-config-label">Swimlane</label>
+    <input class="swimlane-config-input" type="text" bind:value={addSwimlane}
+      placeholder="default" onclick={stopProp} />
+  </div>
+  <div class="swimlane-config-row">
+    <label class="swimlane-config-label">Password</label>
+    <input class="swimlane-config-input" type="password" bind:value={addPassword}
+      placeholder="optional" onclick={stopProp} />
+  </div>
+  <div class="swimlane-config-footer">
+    {#if addError}<span class="swimlane-config-msg error">{addError}</span>{:else}<span></span>{/if}
+    <button class="swimlane-config-btn" onclick={addTarget} disabled={addSaving || !addUrl.trim()}>
+      {addSaving ? 'Adding…' : 'Add target'}
+    </button>
+  </div>
+
 </div>

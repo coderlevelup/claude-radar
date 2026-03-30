@@ -360,19 +360,73 @@ main {
   padding-top: 2px;
 }
 
-.swimlane-config-save {
+.swimlane-config-save,
+.swimlane-config-btn {
   background: var(--accent-dim);
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   color: var(--accent);
   font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
   padding: 3px 12px;
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
 
-.swimlane-config-save:hover { background: rgba(74, 222, 128, 0.2); }
-.swimlane-config-save:disabled { opacity: 0.5; cursor: default; }
+.swimlane-config-save:hover,
+.swimlane-config-btn:hover { background: rgba(74, 222, 128, 0.2); }
+.swimlane-config-save:disabled,
+.swimlane-config-btn:disabled { opacity: 0.5; cursor: default; }
+
+.swimlane-config-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  padding: 6px 0 2px;
+}
+
+.swimlane-config-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.swimlane-config-target-url {
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swimlane-config-target-lane {
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  flex-shrink: 0;
+}
+
+.swimlane-config-remove {
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.swimlane-config-remove:hover { color: var(--orange); }
+
+.swimlane-config-msg {
+  font-size: 11px;
+}
+
+.swimlane-config-msg.error { color: var(--orange); }
 
 .swimlane-config-ok { font-size: 11px; color: var(--green); }
 .swimlane-config-error { font-size: 11px; color: var(--orange); }

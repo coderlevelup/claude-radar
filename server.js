@@ -44,10 +44,10 @@ function setActivity(sessionId, data) {
   try {
     const filePath = findSessionFile(sessionId);
     if (filePath) {
-      const dirName = path.basename(path.dirname(filePath));
-      const projPath = resolveProjectPath(dirName);
-      const vc = getProjectValkey(projPath);
-      if (vc) vc.set(`radar:activity:${sessionId}`, JSON.stringify(data), 'EX', 7200).catch(() => {});
+      const projPath = resolveProjectPath(path.basename(path.dirname(filePath)));
+      for (const { client, swimlane } of getProjectPushTargets(projPath)) {
+        client.set(`radar:${swimlane}:activity:${sessionId}`, JSON.stringify(data), 'EX', 7200).catch(() => {});
+      }
     }
   } catch {}
 }
@@ -98,21 +98,28 @@ const blurbCache = createPersistentCache(path.join(__dirname, 'blurbs.json'));
 // swimlaneKey → [projectPath, ...] — rebuilt on each GET /api/sessions, used by config endpoint
 const swimlaneProjectPaths = new Map();
 
-// Returns ioredis client for a project if it has valkey configured, else null
-function getProjectValkey(projectPath) {
-  const cfg = readRadarConfig(projectPath)?.swimlane?.valkey;
-  if (!cfg?.url) return null;
-  return getValkeyClient(cfg.url, cfg.password || '');
+// Returns all push targets for a project: [{ client, swimlane }]
+function getProjectPushTargets(projectPath) {
+  const pushList = readRadarConfig(projectPath)?.push;
+  if (!Array.isArray(pushList) || pushList.length === 0) return [];
+  return pushList
+    .filter(p => p?.valkey?.url)
+    .map(p => ({
+      client: getValkeyClient(p.valkey.url, p.valkey.password || ''),
+      swimlane: p.swimlane || 'default',
+    }));
 }
 
-// Sync a cache entry to the project's Valkey (fire-and-forget, skips empty values)
-function syncToValkey(filePath, hashKey, sessionId, value, fileSize) {
+// Push a cache entry to all of the project's Valkey targets (fire-and-forget)
+// cacheType is 'titles' or 'blurbs' — keyed as radar:{swimlane}:{cacheType}
+function syncToValkey(filePath, cacheType, sessionId, value, fileSize) {
   if (!value) return;
   try {
-    const dirName = path.basename(path.dirname(filePath));
-    const projPath = resolveProjectPath(dirName);
-    const vc = getProjectValkey(projPath);
-    if (vc) vc.hset(hashKey, sessionId, JSON.stringify({ value, fileSize })).catch(() => {});
+    const projPath = resolveProjectPath(path.basename(path.dirname(filePath)));
+    for (const { client, swimlane } of getProjectPushTargets(projPath)) {
+      client.hset(`radar:${swimlane}:${cacheType}`, sessionId, JSON.stringify({ value, fileSize }))
+        .catch(() => {});
+    }
   } catch {}
 }
 
@@ -312,7 +319,7 @@ async function generateBlurb(sessionId) {
     let blurb = (resp.content[0] && resp.content[0].text || '').trim();
     if (isHaikuRefusal(blurb)) blurb = '';
     blurbCache.set(sessionId, blurb, fileSize);
-    syncToValkey(filePath, 'radar:blurbs', sessionId, blurb, fileSize);
+    syncToValkey(filePath, 'blurbs', sessionId, blurb, fileSize);
   } catch (err) {
     console.error('Blurb generation failed:', err.message);
     blurbCache.set(sessionId, '', fileSize);
@@ -352,7 +359,7 @@ async function generateTitle(sessionId) {
     // Discard Haiku refusals/meta-responses
     if (isHaikuRefusal(title)) title = '';
     titleCache.set(sessionId, title, fileSize);
-    syncToValkey(filePath, 'radar:titles', sessionId, title, fileSize);
+    syncToValkey(filePath, 'titles', sessionId, title, fileSize);
   } catch (err) {
     console.error('Title generation failed:', err.message);
     titleCache.set(sessionId, '', fileSize);
@@ -939,10 +946,15 @@ app.get('/api/sessions', (req, res) => {
       swimlaneTitle = projectPath;
     }
 
-    const valkeyConfig = radarConfig?.swimlane?.valkey;
-    const valkeyConfigured = !!(valkeyConfig?.url);
-    const valkeyConnected = valkeyConfigured && isValkeyReady(valkeyConfig.url, valkeyConfig.password || '');
-    const valkeyUrl = valkeyConfig?.url || '';
+    const valkeyPush = (radarConfig?.push || [])
+      .filter(p => p?.valkey?.url)
+      .map(p => ({
+        url: p.valkey.url,
+        swimlane: p.swimlane || 'default',
+        connected: isValkeyReady(p.valkey.url, p.valkey.password || ''),
+      }));
+    const valkeyConfigured = valkeyPush.length > 0;
+    const valkeyConnected = valkeyPush.some(p => p.connected);
 
     projects.push({
       dirName: dirent.name,
@@ -953,9 +965,9 @@ app.get('/api/sessions', (req, res) => {
       branch,
       swimlaneUrl,
       swimlaneTitle,
+      valkeyPush,
       valkeyConfigured,
       valkeyConnected,
-      valkeyUrl,
       mostRecent: new Date(mostRecent).toISOString(),
       sessions,
     });
@@ -969,9 +981,14 @@ app.get('/api/sessions', (req, res) => {
       existing.sessions.push(...p.sessions);
       existing.projectPaths.push(p.projectPath);
       if (p.mostRecent > existing.mostRecent) existing.mostRecent = p.mostRecent;
-      // Prefer connected Valkey status from any path in the lane
-      if (p.valkeyConnected) existing.valkeyConnected = true;
-      if (p.valkeyConfigured) { existing.valkeyConfigured = true; existing.valkeyUrl = existing.valkeyUrl || p.valkeyUrl; }
+      // Union push targets, deduplicate by url+swimlane
+      for (const t of p.valkeyPush) {
+        if (!existing.valkeyPush.some(e => e.url === t.url && e.swimlane === t.swimlane)) {
+          existing.valkeyPush.push(t);
+        }
+      }
+      existing.valkeyConfigured = existing.valkeyPush.length > 0;
+      existing.valkeyConnected = existing.valkeyPush.some(t => t.connected);
     } else {
       mergedMap.set(p.swimlaneKey, { ...p, projectPaths: [p.projectPath], sessions: [...p.sessions] });
     }
@@ -1129,9 +1146,9 @@ app.get('/api/session/:dirName/:sessionId/recent', (req, res) => {
   }
 });
 
-// Update per-swimlane radar.json config (name, valkey url/password)
+// Update per-swimlane radar.json config (name and/or push targets array)
 app.post('/api/swimlane-config', async (req, res) => {
-  const { swimlaneKey, name, valkeyUrl, valkeyPassword } = req.body || {};
+  const { swimlaneKey, name, push } = req.body || {};
   if (!swimlaneKey) return res.status(400).json({ error: 'missing swimlaneKey' });
 
   const projectPaths = swimlaneProjectPaths.get(swimlaneKey);
@@ -1144,15 +1161,17 @@ app.post('/api/swimlane-config', async (req, res) => {
     if (!config.swimlane) config.swimlane = {};
 
     if (name !== undefined) config.swimlane.name = name;
-    if (valkeyUrl !== undefined) {
-      if (!valkeyUrl) {
-        // Clear valkey config entirely
-        delete config.swimlane.valkey;
+    if (push !== undefined) {
+      // Replace push array entirely (null or empty = clear all targets)
+      if (!push || push.length === 0) {
+        delete config.push;
       } else {
-        if (!config.swimlane.valkey) config.swimlane.valkey = {};
-        config.swimlane.valkey.url = valkeyUrl;
-        if (valkeyPassword) config.swimlane.valkey.password = valkeyPassword;
-        else if (valkeyPassword === '') delete config.swimlane.valkey.password;
+        config.push = push
+          .filter(p => p?.url)
+          .map(p => ({
+            valkey: { url: p.url, ...(p.password ? { password: p.password } : {}) },
+            swimlane: p.swimlane || 'default',
+          }));
       }
     }
 
@@ -1165,20 +1184,23 @@ app.post('/api/swimlane-config', async (req, res) => {
     }
   }
 
-  // Test connection if a URL was provided
-  let valkeyConnected = false;
-  if (valkeyUrl) {
+  // Test each new push target and return status
+  const valkeyPush = [];
+  for (const p of (push || [])) {
+    if (!p?.url) continue;
+    let connected = false;
     try {
-      const client = getValkeyClient(valkeyUrl, valkeyPassword || '');
+      const client = getValkeyClient(p.url, p.password || '');
       await Promise.race([
         new Promise(r => client.status === 'ready' ? r() : client.once('ready', r)),
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
       ]);
-      valkeyConnected = true;
+      connected = true;
     } catch {}
+    valkeyPush.push({ url: p.url, swimlane: p.swimlane || 'default', connected });
   }
 
-  res.json({ ok: true, valkeyConnected });
+  res.json({ ok: true, valkeyPush });
 });
 
 // Focus a terminal window matching project + session title
@@ -1364,41 +1386,45 @@ async function initPerProjectValkeys() {
   try { dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory()); }
   catch { return; }
 
-  const seen = new Set(); // dedupe by url:password so we only load each Valkey once
+  const seen = new Set(); // dedupe by url:password:swimlane so we only load each once
   for (const dirent of dirs) {
     try {
       const raw = fs.readFileSync(path.join(PROJECTS_DIR, dirent.name, 'sessions-index.json'), 'utf-8');
       const projectPath = JSON.parse(raw).entries?.[0]?.projectPath;
       if (!projectPath) continue;
-      const cfg = readRadarConfig(projectPath)?.swimlane?.valkey;
-      if (!cfg?.url) continue;
-      const dedupeKey = `${cfg.url}:${cfg.password || ''}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      const client = getValkeyClient(cfg.url, cfg.password || '');
-      // Wait up to 5s for ready
-      await Promise.race([
-        new Promise(r => client.status === 'ready' ? r() : client.once('ready', r)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
-      ]);
-      const [titles, blurbs] = await Promise.all([
-        client.hgetall('radar:titles'),
-        client.hgetall('radar:blurbs'),
-      ]);
-      if (titles) for (const [id, json] of Object.entries(titles)) try { titleCache.loadEntry(id, JSON.parse(json)); } catch {}
-      if (blurbs) for (const [id, json] of Object.entries(blurbs)) try { blurbCache.loadEntry(id, JSON.parse(json)); } catch {}
-      const activityKeys = await client.keys('radar:activity:*');
-      if (activityKeys.length > 0) {
-        const vals = await Promise.all(activityKeys.map(k => client.get(k)));
-        for (let i = 0; i < activityKeys.length; i++) {
-          if (vals[i]) try { activityMap.set(activityKeys[i].replace('radar:activity:', ''), JSON.parse(vals[i])); } catch {}
+      const pushList = readRadarConfig(projectPath)?.push || [];
+      for (const p of pushList) {
+        if (!p?.valkey?.url) continue;
+        const swimlane = p.swimlane || 'default';
+        const dedupeKey = `${p.valkey.url}:${p.valkey.password || ''}:${swimlane}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        try {
+          const client = getValkeyClient(p.valkey.url, p.valkey.password || '');
+          await Promise.race([
+            new Promise(r => client.status === 'ready' ? r() : client.once('ready', r)),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+          ]);
+          const [titles, blurbs] = await Promise.all([
+            client.hgetall(`radar:${swimlane}:titles`),
+            client.hgetall(`radar:${swimlane}:blurbs`),
+          ]);
+          if (titles) for (const [id, json] of Object.entries(titles)) try { titleCache.loadEntry(id, JSON.parse(json)); } catch {}
+          if (blurbs) for (const [id, json] of Object.entries(blurbs)) try { blurbCache.loadEntry(id, JSON.parse(json)); } catch {}
+          const activityKeys = await client.keys(`radar:${swimlane}:activity:*`);
+          if (activityKeys.length > 0) {
+            const vals = await Promise.all(activityKeys.map(k => client.get(k)));
+            for (let i = 0; i < activityKeys.length; i++) {
+              if (vals[i]) try { activityMap.set(activityKeys[i].replace(`radar:${swimlane}:activity:`, ''), JSON.parse(vals[i])); } catch {}
+            }
+          }
+          console.log(`Valkey caches loaded from ${p.valkey.url} (${swimlane})`);
+        } catch (err) {
+          if (err.message !== 'timeout') console.error(`initPerProjectValkeys ${p.valkey.url}: ${err.message}`);
         }
       }
-      console.log(`Valkey caches loaded from ${cfg.url}`);
     } catch (err) {
-      if (err.message !== 'timeout' && err.code !== 'ENOENT') {
-        console.error(`initPerProjectValkeys(${dirent.name}): ${err.message}`);
-      }
+      if (err.code !== 'ENOENT') console.error(`initPerProjectValkeys(${dirent.name}): ${err.message}`);
     }
   }
 }

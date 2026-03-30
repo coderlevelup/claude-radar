@@ -13,11 +13,11 @@ export async function fetchRecent(dirName, sessionId) {
   return res.json();
 }
 
-export async function saveSwimlaneConfig(swimlaneKey, { name, valkeyUrl, valkeyPassword } = {}) {
+// push: [{ url, password?, swimlane }] | null to clear all targets
+export async function saveSwimlaneConfig(swimlaneKey, { name, push } = {}) {
   const body = { swimlaneKey };
   if (name !== undefined) body.name = name;
-  if (valkeyUrl !== undefined) body.valkeyUrl = valkeyUrl;
-  if (valkeyPassword !== undefined) body.valkeyPassword = valkeyPassword;
+  if (push !== undefined) body.push = push;
   const res = await fetch('/api/swimlane-config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
