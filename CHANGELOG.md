@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-03-31
+
+### Added
+- **Swimlane slug** — stable, portable swimlane identity (`swimlane.slug` in `radar.json`); auto-generated from `projectName + branch` if absent; used for cross-radar session merging
+- **Session push to Valkey** — `GET /api/sessions` debounce-pushes current session metadata to every configured push target (`radar:{swimlane}:sessions` HASH) at most once every 30 s
+- **Global subscriptions** — `~/.claude/radar.json` can declare `subscriptions: [{ valkey: {url, password?}, swimlane }]`; server pulls remote sessions every 30 s and merges them into the board by slug
+- Remote sessions are merged into matching local swimlane (same slug) or appear as a new remote-only swimlane row
+- Staleness correction on remote sessions: `working` → `idle` after 60 s, `waiting` → `idle` after 1 h
+- Slug field in swimlane config UI — shows auto-computed value, editable to override; saved alongside name
+
+### Changed
+- `POST /api/swimlane-config` now accepts a `slug` field (written to `radar.json swimlane.slug`)
+
+---
+
 ## [0.8.0] - 2026-03-27
 
 ### Added

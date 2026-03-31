@@ -7,6 +7,9 @@
   let nameError = $state('');
   let nameSaving = $state(false);
 
+  let slug = $state(project.slug || '');
+  let slugDirty = $state(false);
+
   // Push targets list — initialised from project.valkeyPush
   let targets = $state((project.valkeyPush || []).map(t => ({ ...t })));
 
@@ -25,8 +28,11 @@
     nameSaving = true;
     nameError = '';
     try {
-      const r = await saveSwimlaneConfig(project.swimlaneKey, { name: name.trim() });
+      const body = { name: name.trim() };
+      if (slugDirty) body.slug = slug.trim() || null;
+      const r = await saveSwimlaneConfig(project.swimlaneKey, body);
       if (r.error) nameError = r.error;
+      else slugDirty = false;
     } catch (err) { nameError = err.message; }
     finally { nameSaving = false; }
   }
@@ -73,6 +79,15 @@
     <button class="swimlane-config-btn" onclick={saveName} disabled={nameSaving}>
       {nameSaving ? '…' : 'Save'}
     </button>
+  </div>
+  <!-- Slug row -->
+  <div class="swimlane-config-row">
+    <label class="swimlane-config-label">Slug</label>
+    <input class="swimlane-config-input" type="text" bind:value={slug}
+      placeholder={project.slug || '(auto)'}
+      oninput={() => slugDirty = true}
+      onclick={stopProp} />
+    {#if !slugDirty}<span class="swimlane-config-hint">auto</span>{/if}
   </div>
   {#if nameError}<div class="swimlane-config-msg error">{nameError}</div>{/if}
 

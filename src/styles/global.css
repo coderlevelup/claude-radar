@@ -353,6 +353,14 @@ main {
 
 .swimlane-config-input:focus { border-color: var(--accent); }
 
+.swimlane-config-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
 .swimlane-config-footer {
   display: flex;
   align-items: center;

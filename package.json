@@ -1,6 +1,6 @@
 {
   "name": "claude-radar",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Live radar dashboard for Claude Code conversations",
   "type": "module",
   "main": "server.js",

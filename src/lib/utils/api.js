@@ -14,9 +14,10 @@ export async function fetchRecent(dirName, sessionId) {
 }
 
 // push: [{ url, password?, swimlane }] | null to clear all targets
-export async function saveSwimlaneConfig(swimlaneKey, { name, push } = {}) {
+export async function saveSwimlaneConfig(swimlaneKey, { name, slug, push } = {}) {
   const body = { swimlaneKey };
   if (name !== undefined) body.name = name;
+  if (slug !== undefined) body.slug = slug;
   if (push !== undefined) body.push = push;
   const res = await fetch('/api/swimlane-config', {
     method: 'POST',

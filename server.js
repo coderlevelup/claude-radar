@@ -11,6 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 6767;
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const GLOBAL_RADAR_CONFIG = path.join(os.homedir(), '.claude', 'radar.json');
 const { currentUsername, avatarUrl } = (() => {
   // 1. gh CLI — gives both login and avatar_url in one call
   try {
@@ -98,6 +99,21 @@ const blurbCache = createPersistentCache(path.join(__dirname, 'blurbs.json'));
 // swimlaneKey → [projectPath, ...] — rebuilt on each GET /api/sessions, used by config endpoint
 const swimlaneProjectPaths = new Map();
 
+// Remote sessions pulled from subscriptions — key: "{url}:{swimlane}", value: [session, ...]
+const remoteSessionsCache = new Map();
+
+let lastSessionPush = 0;
+
+function makeSlug(name, branch) {
+  const base = (name || 'unnamed').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const b = (branch || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return (b && b !== 'main' && b !== 'master') ? `${base}-${b}` : base;
+}
+
+function readGlobalRadarConfig() {
+  try { return JSON.parse(fs.readFileSync(GLOBAL_RADAR_CONFIG, 'utf-8')); } catch { return null; }
+}
+
 // Returns all push targets for a project: [{ client, swimlane }]
 function getProjectPushTargets(projectPath) {
   const pushList = readRadarConfig(projectPath)?.push;
@@ -121,6 +137,64 @@ function syncToValkey(filePath, cacheType, sessionId, value, fileSize) {
         .catch(() => {});
     }
   } catch {}
+}
+
+async function pushSessionsToValkey(projects) {
+  for (const project of projects) {
+    if (!project.valkeyPush?.length) continue;
+    for (const { url, swimlane } of project.valkeyPush) {
+      const radarConfig = readRadarConfig(project.projectPath);
+      const password = radarConfig?.push?.find(p => p?.valkey?.url === url)?.valkey?.password || '';
+      const client = getValkeyClient(url, password);
+      if (client.status !== 'ready') continue;
+      for (const s of project.sessions) {
+        const key = `${s.username}:${s.sessionId}`;
+        const payload = JSON.stringify({
+          sessionId: s.sessionId, username: s.username, avatarUrl: s.avatarUrl,
+          title: s.title, blurb: s.blurb, status: s.status,
+          modified: s.modified, created: s.created,
+          messageCount: s.messageCount, gitBranch: s.gitBranch, isSidechain: s.isSidechain,
+          slug: project.slug, projectName: project.projectName,
+          swimlaneTitle: project.swimlaneTitle, repoUrl: project.repoUrl, branch: project.branch,
+          pushedAt: Date.now(),
+        });
+        client.hset(`radar:${swimlane}:sessions`, key, payload).catch(() => {});
+      }
+    }
+  }
+}
+
+function maybePushSessionsToValkey(projects) {
+  if (Date.now() - lastSessionPush < 30000) return;
+  lastSessionPush = Date.now();
+  pushSessionsToValkey(projects).catch(() => {});
+}
+
+async function pullSubscriptions() {
+  const subs = (readGlobalRadarConfig()?.subscriptions || []).filter(s => s?.valkey?.url);
+  for (const sub of subs) {
+    const swimlane = sub.swimlane || 'default';
+    const cacheKey = `${sub.valkey.url}:${swimlane}`;
+    try {
+      const client = getValkeyClient(sub.valkey.url, sub.valkey.password || '');
+      await Promise.race([
+        new Promise(r => client.status === 'ready' ? r() : client.once('ready', r)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+      ]);
+      const hash = await client.hgetall(`radar:${swimlane}:sessions`);
+      const sessions = Object.values(hash || {})
+        .map(v => { try { return JSON.parse(v); } catch {} })
+        .filter(Boolean)
+        .filter(s => Date.now() - s.pushedAt < 86400000);
+      remoteSessionsCache.set(cacheKey, sessions);
+      const [titles, blurbs] = await Promise.all([
+        client.hgetall(`radar:${swimlane}:titles`),
+        client.hgetall(`radar:${swimlane}:blurbs`),
+      ]);
+      if (titles) for (const [id, j] of Object.entries(titles)) try { titleCache.loadEntry(id, JSON.parse(j)); } catch {}
+      if (blurbs) for (const [id, j] of Object.entries(blurbs)) try { blurbCache.loadEntry(id, JSON.parse(j)); } catch {}
+    } catch {}
+  }
 }
 
 app.use(express.json());
@@ -932,6 +1006,7 @@ app.get('/api/sessions', (req, res) => {
     const folderName = path.basename(projectPath);
     const repoBasename = repoUrl ? repoUrl.split('/').pop() : '';
     const projectName = radarConfig?.swimlane?.name || repoBasename || folderName;
+    const slug = radarConfig?.swimlane?.slug || makeSlug(projectName, branch);
     const swimlaneKey = repoUrl ? `${repoUrl}#${branch}` : dirent.name;
     const swimlaneUrl = radarConfig?.swimlane?.url
       || (repoUrl && branch ? `${repoUrl}/tree/${branch}` : repoUrl || '');
@@ -959,6 +1034,7 @@ app.get('/api/sessions', (req, res) => {
     projects.push({
       dirName: dirent.name,
       swimlaneKey,
+      slug,
       projectName,
       projectPath,
       repoUrl,
@@ -994,6 +1070,46 @@ app.get('/api/sessions', (req, res) => {
     }
   }
   const mergedProjects = [...mergedMap.values()];
+
+  // Merge remote sessions from subscription cache
+  const remoteBySlug = new Map();
+  for (const sessions of remoteSessionsCache.values()) {
+    for (const s of sessions) {
+      const slug = s.slug || 'remote';
+      if (!remoteBySlug.has(slug)) remoteBySlug.set(slug, []);
+      remoteBySlug.get(slug).push(s);
+    }
+  }
+  const nowMs = Date.now();
+  for (const [slug, remoteSessions] of remoteBySlug) {
+    for (const s of remoteSessions) {
+      if (s.status === 'working' && nowMs - s.pushedAt > 60000) s.status = 'idle';
+      if (s.status === 'waiting' && nowMs - s.pushedAt > 3600000) s.status = 'idle';
+    }
+    const local = mergedProjects.find(p => p.slug === slug);
+    if (local) {
+      const existingIds = new Set(local.sessions.map(s => s.sessionId));
+      for (const s of remoteSessions) {
+        if (!existingIds.has(s.sessionId)) {
+          local.sessions.push(s);
+          if (s.modified > local.mostRecent) local.mostRecent = s.modified;
+        }
+      }
+    } else {
+      const first = remoteSessions[0];
+      mergedProjects.push({
+        dirName: `remote:${slug}`, swimlaneKey: `remote:${slug}`, slug,
+        projectName: first?.projectName || slug,
+        projectPath: '', projectPaths: [], repoUrl: first?.repoUrl || '',
+        branch: first?.branch || '', swimlaneUrl: '', swimlaneTitle: first?.swimlaneTitle || slug,
+        valkeyPush: [], valkeyConfigured: false, valkeyConnected: false,
+        mostRecent: remoteSessions.reduce((m, s) => s.modified > m ? s.modified : m, remoteSessions[0]?.modified || ''),
+        sessions: remoteSessions, isRemote: true,
+      });
+    }
+  }
+
+  maybePushSessionsToValkey(mergedProjects);
 
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1146,9 +1262,9 @@ app.get('/api/session/:dirName/:sessionId/recent', (req, res) => {
   }
 });
 
-// Update per-swimlane radar.json config (name and/or push targets array)
+// Update per-swimlane radar.json config (name, slug, and/or push targets array)
 app.post('/api/swimlane-config', async (req, res) => {
-  const { swimlaneKey, name, push } = req.body || {};
+  const { swimlaneKey, name, slug, push } = req.body || {};
   if (!swimlaneKey) return res.status(400).json({ error: 'missing swimlaneKey' });
 
   const projectPaths = swimlaneProjectPaths.get(swimlaneKey);
@@ -1161,6 +1277,10 @@ app.post('/api/swimlane-config', async (req, res) => {
     if (!config.swimlane) config.swimlane = {};
 
     if (name !== undefined) config.swimlane.name = name;
+    if (slug !== undefined) {
+      if (slug) config.swimlane.slug = slug;
+      else delete config.swimlane.slug;
+    }
     if (push !== undefined) {
       // Replace push array entirely (null or empty = clear all targets)
       if (!push || push.length === 0) {
@@ -1283,7 +1403,7 @@ async function refreshCaches() {
       const filePath = path.join(projectDir, file);
 
       const parsed = parseSessionFile(filePath);
-      if (!parsed || !parsed.firstPrompt) continue; // empty session
+      if (!parsed || parsed.messageCount === 0) continue; // empty session
 
       const needsTitleRefresh = !indexedSummaries.has(sessionId)
         && !(parsed && parsed.summary)
@@ -1432,6 +1552,8 @@ async function initPerProjectValkeys() {
 app.listen(PORT, () => {
   console.log(`Claude Radar → http://localhost:${PORT}`);
   migrateCompactions();
+  pullSubscriptions().catch(() => {});
+  setInterval(() => pullSubscriptions().catch(() => {}), 30000);
   initPerProjectValkeys()
     .then(() => refreshCaches())
     .catch(err => console.error('startup failed:', err.message));

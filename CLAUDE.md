@@ -22,6 +22,13 @@ Each session has a `status` field (`working`, `waiting`, `idle`) determined by r
 - **waiting** — last assistant message has `stop_reason: end_turn` and file modified <1 hour ago
 - **idle** — same as waiting but file is >1 hour old
 
+### Swimlane Identity
+
+Each swimlane has two identifiers:
+
+- **`swimlaneKey`** — synthetic local-merge key (`repoUrl#branch` or `dirName`). Used for localStorage sort order, collapse state, and drag-and-drop. Not portable.
+- **`slug`** — stable, portable identity used for cross-radar session merging. Set via `swimlane.slug` in `radar.json`; auto-generated from `projectName+branch` if absent (e.g. `my-backend`, `my-backend-feature-xyz`). Editable in the swimlane config UI.
+
 ### Swimlane Grouping and Titles
 
 Sessions are grouped into swimlanes by `swimlaneKey`:
@@ -88,30 +95,67 @@ logs/                  — stdout/stderr from launchd
 SERVICE.md             — Launchd service setup and management
 ```
 
+### Valkey / Collaborative Sharing
+
+Valkey (Redis-compatible) is entirely opt-in. Without any config the server runs purely locally.
+
+**Push targets** (per-project `radar.json`): each entry in `push` causes the server to replicate titles, blurbs, activity, and session metadata to a remote Valkey. Multiple targets are supported. Session metadata is pushed at most once every 30 s when `GET /api/sessions` is polled.
+
+**Subscriptions** (global `~/.claude/radar.json`): the server pulls remote session metadata from each subscribed Valkey every 30 s and merges it into the board by `slug`. Remote sessions with a matching local slug are added to that swimlane; otherwise a new remote-only swimlane row appears. Staleness correction: `working` → `idle` after 60 s, `waiting` → `idle` after 1 h since last push.
+
+**Valkey key schema:**
+```
+radar:{swimlane}:titles                — HASH { sessionId → JSON({value, fileSize}) }
+radar:{swimlane}:blurbs                — HASH { sessionId → JSON({value, fileSize}) }
+radar:{swimlane}:activity:{sessionId}  — STRING JSON({event, timestamp}), TTL 2h
+radar:{swimlane}:sessions              — HASH { "{user}:{sessionId}" → JSON(session) }
+```
 ## API Endpoints
 
 - `GET /api/sessions` — All projects and sessions with metadata + status
 - `GET /api/session/:dirName/:sessionId` — Full parsed conversation for one session
+- `POST /api/swimlane-config` — Update swimlane `name`, `slug`, or `push` targets
+- `POST /api/activity` — Receive hook events from Claude Code (`working`, `stop`, `idle`)
 
 ## radar.json Configuration
 
 Place a `.claude/radar.json` file in a project directory to customise how it appears in the dashboard. Claude Code ignores this file; only the radar server reads it.
 
-### Schema
+### Per-project schema (`.claude/radar.json`)
 
 ```json
 {
   "swimlane": {
     "name": "my-project",
+    "slug": "my-project",
     "title": "my-project/{branch} [repo](https://github.com/org/repo/tree/main)"
-  }
+  },
+  "push": [
+    { "valkey": { "url": "redis://host:6379", "password": "optional" }, "swimlane": "my-project" }
+  ]
 }
 ```
 
 | Field | Description |
 |---|---|
-| `name` | Display name for the project. Used in PiP labels and as `projectName`. Defaults to git repo basename or folder name. |
-| `title` | Markdown string for the swimlane header. `{branch}` is replaced with the current git branch (or looked up from `worktrees.json` for non-git dirs). Supports `[text](url)` inline links. If absent, auto-generated from `name/branch`. |
+| `swimlane.name` | Display name for the project. Used in PiP labels and as `projectName`. Defaults to git repo basename or folder name. |
+| `swimlane.slug` | Stable cross-radar identity for session merging. Auto-generated from `name+branch` if absent. |
+| `swimlane.title` | Markdown string for the swimlane header. `{branch}` is replaced with the current git branch (or looked up from `worktrees.json` for non-git dirs). Supports `[text](url)` inline links. If absent, auto-generated from `name/branch`. |
+| `push` | Array of Valkey targets to replicate data to. Each entry has `valkey.url`, optional `valkey.password`, and `swimlane` (the Valkey namespace key). |
+
+### Global config (`~/.claude/radar.json`)
+
+```json
+{
+  "subscriptions": [
+    { "valkey": { "url": "redis://team:6379", "password": "s3cr3t" }, "swimlane": "my-project" }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `subscriptions` | Array of remote Valkeys to pull session data from. Merged into the board by `slug` every 30 s. |
 
 ### Multi-service systems (worktrees)
 
