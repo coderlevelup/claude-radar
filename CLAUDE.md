@@ -27,7 +27,7 @@ Each session has a `status` field (`working`, `waiting`, `idle`) determined by r
 Each swimlane has two identifiers:
 
 - **`swimlaneKey`** — synthetic local-merge key (`repoUrl#branch` or `dirName`). Used for localStorage sort order, collapse state, and drag-and-drop. Not portable.
-- **`slug`** — stable, portable identity used for cross-radar session merging. Set via `swimlane.slug` in `radar.json`; auto-generated from `projectName+branch` if absent (e.g. `my-backend`, `my-backend-feature-xyz`). Editable in the swimlane config UI.
+- **`slug`** — stable, portable identity used for cross-radar session merging. Set via `swimlane.slug` in `radar.json`; auto-generated from `projectName+branch` if absent (e.g. `my-service`, `my-service-feature-xyz`). Editable in the swimlane config UI.
 
 ### Swimlane Grouping and Titles
 
@@ -157,7 +157,7 @@ Place a `.claude/radar.json` file in a project directory to customise how it app
 |---|---|
 | `subscriptions` | Array of remote Valkeys to pull session data from. Merged into the board by `slug` every 30 s. |
 
-### Multi-service systems (worktrees)
+### Multi-service systems (monorepo worktrees)
 
 For systems with multiple service repos, `title` can link to all of them:
 
@@ -165,7 +165,7 @@ For systems with multiple service repos, `title` can link to all of them:
 {
   "swimlane": {
     "name": "my-platform",
-    "title": "my-platform/{branch} [gitops](https://github.com/org/my-platform_gitops/tree/main) · [my-backend](https://github.com/org/my-platform_my-backend/tree/develop) · [my-frontend](https://github.com/org/my-platform_my-frontend/tree/develop)"
+    "title": "my-platform/{branch} [infra](https://github.com/org/my-platform-infra/tree/main) · [backend](https://github.com/org/my-platform-backend/tree/develop) · [frontend](https://github.com/org/my-platform-frontend/tree/develop)"
   }
 }
 ```
