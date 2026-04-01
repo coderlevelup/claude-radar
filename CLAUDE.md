@@ -148,7 +148,7 @@ Place a `.claude/radar.json` file in a project directory to customise how it app
 ```json
 {
   "subscriptions": [
-    { "valkey": { "url": "redis://team:6379", "password": "s3cr3t" }, "swimlane": "my-project" }
+    { "valkey": { "url": "redis://team:6379", "password": "YOUR_PASSWORD" }, "swimlane": "my-project" }
   ]
 }
 ```

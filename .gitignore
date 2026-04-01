@@ -1,2 +1,8 @@
 node_modules/
 logs/
+.claude/
+titles.json
+blurbs.json
+*.local.json
+.env
+.env.*
